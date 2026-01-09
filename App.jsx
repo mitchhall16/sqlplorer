@@ -1,0 +1,1185 @@
+import React, { useState, useMemo, useCallback } from 'react';
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import Papa from 'papaparse';
+
+const COLORS = ['#00F5D4', '#00BBF9', '#FEE440', '#F15BB5', '#9B5DE5', '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7'];
+
+export default function App() {
+  const [tables, setTables] = useState({});
+  const [activeTable, setActiveTable] = useState('');
+  const [columns, setColumns] = useState([]);
+  const [columnTypes, setColumnTypes] = useState({});
+  const [filters, setFilters] = useState({});
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+  const [activeView, setActiveView] = useState('table');
+  const [fileName, setFileName] = useState('');
+  const [parseLog, setParseLog] = useState([]);
+  const [calculatedColumns, setCalculatedColumns] = useState([]);
+  const [urlInput, setUrlInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+
+  const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
+
+  const detectColumnType = (values) => {
+    const sample = values.filter(v => v !== null && v !== '' && v !== undefined).slice(0, 100);
+    if (sample.length === 0) return 'text';
+    
+    const numericCount = sample.filter(v => {
+      const cleaned = String(v).replace(/[$,€£¥]/g, '').trim();
+      return !isNaN(parseFloat(cleaned)) && isFinite(cleaned);
+    }).length;
+    
+    const dateCount = sample.filter(v => {
+      if (typeof v !== 'string') return false;
+      return !isNaN(Date.parse(v)) || /^\d{4}-\d{2}-\d{2}/.test(v) || /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(v);
+    }).length;
+    
+    if (numericCount > sample.length * 0.7) return 'number';
+    if (dateCount > sample.length * 0.7) return 'date';
+    
+    const uniqueRatio = new Set(sample).size / sample.length;
+    if (uniqueRatio < 0.3 && sample.length > 5) return 'category';
+    
+    return 'text';
+  };
+
+  const detectSpecialColumns = (cols, types) => {
+    const patterns = {
+      account: ['account', 'customer', 'client', 'user', 'name', 'buyer', 'company', 'org', 'vendor', 'member', 'supplier'],
+      amount: ['amount', 'total', 'price', 'cost', 'spend', 'revenue', 'value', 'sum', 'payment', 'balance', 'unit_cost', 'unit_price', 'ext_cost', 'extended'],
+      quantity: ['qty', 'quantity', 'count', 'units', 'num', 'number'],
+      date: ['date', 'time', 'day', 'created', 'updated', 'timestamp', 'ordered', 'purchased'],
+      category: ['category', 'type', 'group', 'class', 'department', 'section', 'family'],
+      partNumber: ['part', 'sku', 'item', 'product', 'pn', 'part_number', 'partnumber', 'item_number', 'itemnumber', 'material']
+    };
+
+    const detected = {};
+    
+    Object.entries(patterns).forEach(([key, keywords]) => {
+      for (const col of cols) {
+        const colLower = col.toLowerCase().replace(/[_-]/g, '');
+        if (keywords.some(k => colLower.includes(k.replace(/[_-]/g, '')))) {
+          if (key === 'amount' || key === 'quantity') {
+            if (types[col] === 'number') {
+              detected[key] = col;
+              break;
+            }
+          } else {
+            detected[key] = col;
+            break;
+          }
+        }
+      }
+    });
+
+    if (!detected.amount) {
+      detected.amount = cols.find(c => types[c] === 'number');
+    }
+    if (!detected.account && !detected.category) {
+      detected.account = cols.find(c => types[c] === 'category' || types[c] === 'text');
+    }
+
+    return detected;
+  };
+
+  const parseSQLFile = (content) => {
+    const logs = [];
+    const extractedTables = {};
+    const tableSchemas = {};
+    
+    let cleanContent = content
+      .replace(/--.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\r\n/g, '\n');
+    
+    logs.push('🔍 Parsing SQL file...');
+    
+    const createTableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"'\[]?(\w+)[`"'\]]?\s*\(([\s\S]*?)\)(?:\s*ENGINE|\s*;|\s*$)/gi;
+    let match;
+    
+    while ((match = createTableRegex.exec(cleanContent)) !== null) {
+      const tableName = match[1];
+      const columnsBlock = match[2];
+      
+      const columnDefs = [];
+      const colRegex = /[`"'\[]?(\w+)[`"'\]]?\s+(INT|INTEGER|VARCHAR|TEXT|CHAR|DATE|DATETIME|TIMESTAMP|DECIMAL|FLOAT|DOUBLE|BOOLEAN|BOOL|BIGINT|SMALLINT|TINYINT|NUMERIC|REAL|MONEY|TIME|NVARCHAR|BIT)/gi;
+      let colMatch;
+      
+      while ((colMatch = colRegex.exec(columnsBlock)) !== null) {
+        columnDefs.push(colMatch[1]);
+      }
+      
+      if (columnDefs.length > 0) {
+        tableSchemas[tableName.toLowerCase()] = columnDefs;
+        logs.push(`📋 Found table: ${tableName} (${columnDefs.length} columns)`);
+      }
+    }
+    
+    const insertRegex = /INSERT\s+INTO\s+[`"'\[]?(\w+)[`"'\]]?\s*(?:\(([^)]+)\))?\s*VALUES\s*([\s\S]*?)(?=INSERT\s+INTO|CREATE|DROP|ALTER|UPDATE|DELETE|;?\s*$)/gi;
+    
+    while ((match = insertRegex.exec(cleanContent)) !== null) {
+      const tableName = match[1].toLowerCase();
+      const explicitColumns = match[2];
+      const valuesBlock = match[3];
+      
+      let cols = [];
+      if (explicitColumns) {
+        cols = explicitColumns.split(',').map(c => c.trim().replace(/[`"'\[\]]/g, ''));
+      } else if (tableSchemas[tableName]) {
+        cols = tableSchemas[tableName];
+      }
+      
+      const valueSetRegex = /\(([^)]+)\)/g;
+      let valueMatch;
+      const rows = [];
+      
+      while ((valueMatch = valueSetRegex.exec(valuesBlock)) !== null) {
+        const valueStr = valueMatch[1];
+        const values = [];
+        let current = '';
+        let inString = false;
+        let stringChar = '';
+        
+        for (let i = 0; i < valueStr.length; i++) {
+          const char = valueStr[i];
+          
+          if (!inString && (char === "'" || char === '"')) {
+            inString = true;
+            stringChar = char;
+          } else if (inString && char === stringChar && valueStr[i-1] !== '\\') {
+            inString = false;
+          } else if (!inString && char === ',') {
+            values.push(current.trim());
+            current = '';
+            continue;
+          }
+          current += char;
+        }
+        values.push(current.trim());
+        
+        const cleanedValues = values.map(v => {
+          v = v.trim();
+          if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
+            return v.slice(1, -1).replace(/\\'/g, "'").replace(/\\"/g, '"');
+          }
+          if (v.toUpperCase() === 'NULL') return null;
+          const num = parseFloat(v);
+          if (!isNaN(num) && isFinite(v)) return num;
+          return v;
+        });
+        
+        if (cols.length === 0) {
+          cols = cleanedValues.map((_, i) => `column_${i + 1}`);
+        }
+        
+        const row = { _id: rows.length };
+        cols.forEach((col, i) => {
+          row[col] = cleanedValues[i] !== undefined ? cleanedValues[i] : null;
+        });
+        rows.push(row);
+      }
+      
+      if (rows.length > 0) {
+        if (!extractedTables[tableName]) {
+          extractedTables[tableName] = { columns: cols, rows: [] };
+        }
+        extractedTables[tableName].rows.push(...rows);
+        logs.push(`📥 Loaded ${rows.length} rows → ${tableName}`);
+      }
+    }
+    
+    const result = {};
+    Object.entries(extractedTables).forEach(([name, { rows }]) => {
+      result[name] = rows.map((row, idx) => ({ ...row, _id: idx }));
+    });
+    
+    if (Object.keys(result).length === 0) {
+      logs.push('⚠️ No data found. Make sure your SQL file has INSERT statements.');
+    } else {
+      const totalRows = Object.values(result).reduce((sum, rows) => sum + rows.length, 0);
+      logs.push(`✅ Done! ${Object.keys(result).length} table(s), ${totalRows} total rows`);
+    }
+    
+    return { tables: result, logs, schemas: tableSchemas };
+  };
+
+  const processTableData = (tableData, cols) => {
+    const types = {};
+    cols.forEach(col => {
+      const values = tableData.map(row => row[col]);
+      types[col] = detectColumnType(values);
+    });
+    
+    const processedData = tableData.map((row, idx) => {
+      const newRow = { _id: idx };
+      cols.forEach(col => {
+        if (types[col] === 'number' && row[col] !== null && row[col] !== undefined) {
+          const cleaned = String(row[col]).replace(/[$,€£¥]/g, '').trim();
+          newRow[col] = parseFloat(cleaned) || 0;
+        } else {
+          newRow[col] = row[col];
+        }
+      });
+      return newRow;
+    });
+    
+    return { processedData, types };
+  };
+
+  const handleFileUpload = useCallback((e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setFileName(file.name);
+    setParseLog([]);
+    setCalculatedColumns([]);
+    setLoadError('');
+    const ext = file.name.split('.').pop().toLowerCase();
+    
+    if (ext === 'sql') {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const content = event.target.result;
+        processContent(content, 'sql', file.name);
+      };
+      reader.readAsText(file);
+    } else {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+          processCSVResults(results, file.name);
+        }
+      });
+    }
+  }, []);
+
+  const processContent = useCallback((content, type, name) => {
+    if (type === 'sql') {
+      const { tables: parsedTables, logs } = parseSQLFile(content);
+      
+      setParseLog(logs);
+      
+      if (Object.keys(parsedTables).length > 0) {
+        const firstTable = Object.keys(parsedTables)[0];
+        const tableData = parsedTables[firstTable];
+        const cols = Object.keys(tableData[0] || {}).filter(k => k !== '_id');
+        
+        const { processedData, types } = processTableData(tableData, cols);
+        parsedTables[firstTable] = processedData;
+        
+        setTables(parsedTables);
+        setActiveTable(firstTable);
+        setColumns(cols);
+        setColumnTypes(types);
+        setFilters({});
+        setSelectedCategory('all');
+      }
+    } else {
+      // Parse as CSV
+      Papa.parse(content, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+          processCSVResults(results, name);
+        }
+      });
+    }
+  }, []);
+
+  const processCSVResults = useCallback((results, name) => {
+    const parsedData = results.data;
+    const cols = results.meta.fields || [];
+    
+    const { processedData, types } = processTableData(parsedData, cols);
+    
+    const tableName = name.replace(/\.[^/.]+$/, '').toLowerCase().replace(/[^a-z0-9]/g, '_');
+    setTables({ [tableName]: processedData });
+    setActiveTable(tableName);
+    setColumns(cols);
+    setColumnTypes(types);
+    setFilters({});
+    setSelectedCategory('all');
+    setParseLog([`✅ Loaded ${processedData.length} rows`]);
+  }, []);
+
+  const handleURLFetch = useCallback(async () => {
+    if (!urlInput.trim()) return;
+    
+    setIsLoading(true);
+    setLoadError('');
+    setParseLog([]);
+    setCalculatedColumns([]);
+    
+    try {
+      // Extract filename from URL
+      const urlObj = new URL(urlInput.trim());
+      let name = urlObj.pathname.split('/').pop() || 'data';
+      
+      // Handle Google Sheets URLs
+      let fetchUrl = urlInput.trim();
+      if (urlInput.includes('docs.google.com/spreadsheets')) {
+        // Convert to CSV export URL
+        const match = urlInput.match(/\/d\/([a-zA-Z0-9-_]+)/);
+        if (match) {
+          fetchUrl = `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv`;
+          name = 'google_sheet.csv';
+        }
+      }
+      
+      setParseLog(['🔗 Fetching URL...']);
+      
+      const response = await fetch(fetchUrl);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const content = await response.text();
+      
+      if (!content || content.trim().length === 0) {
+        throw new Error('Empty response received');
+      }
+      
+      setFileName(name);
+      setParseLog(prev => [...prev, `📥 Downloaded ${(content.length / 1024).toFixed(1)} KB`]);
+      
+      // Detect file type from URL or content
+      const ext = name.split('.').pop().toLowerCase();
+      
+      if (ext === 'sql' || content.trim().toUpperCase().startsWith('CREATE') || content.includes('INSERT INTO')) {
+        processContent(content, 'sql', name);
+      } else {
+        processContent(content, 'csv', name);
+      }
+      
+    } catch (err) {
+      console.error('Fetch error:', err);
+      let errorMsg = err.message;
+      
+      if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+        errorMsg = 'CORS blocked or network error. Try a direct file link (raw GitHub, public CSV) or download and upload instead.';
+      }
+      
+      setLoadError(errorMsg);
+      setParseLog(prev => [...prev, `❌ Error: ${errorMsg}`]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [urlInput, processContent]);
+
+  const switchTable = useCallback((tableName) => {
+    const tableData = tables[tableName];
+    if (!tableData || tableData.length === 0) return;
+    
+    const cols = Object.keys(tableData[0] || {}).filter(k => k !== '_id');
+    const types = {};
+    cols.forEach(col => {
+      const values = tableData.map(row => row[col]);
+      types[col] = detectColumnType(values);
+    });
+    
+    setActiveTable(tableName);
+    setColumns(cols);
+    setColumnTypes(types);
+    setFilters({});
+    setSelectedCategory('all');
+    setSortConfig({ key: null, direction: 'asc' });
+    setCalculatedColumns([]);
+  }, [tables]);
+
+  const detectedColumns = useMemo(() => detectSpecialColumns(columns, columnTypes), [columns, columnTypes]);
+  
+  const uniqueCategories = useMemo(() => {
+    const catCol = detectedColumns.category || detectedColumns.account;
+    if (!catCol) return [];
+    return [...new Set(data.map(row => row[catCol]))].filter(Boolean).sort();
+  }, [data, detectedColumns]);
+
+  const addCalculatedColumn = useCallback(() => {
+    const qtyCol = detectedColumns.quantity;
+    const priceCol = detectedColumns.amount;
+    
+    if (qtyCol && priceCol) {
+      const newCalcCol = {
+        name: 'ext_total',
+        label: 'Extended Total',
+        formula: `${qtyCol} × ${priceCol}`,
+        calculate: (row) => (parseFloat(row[qtyCol]) || 0) * (parseFloat(row[priceCol]) || 0)
+      };
+      
+      if (!calculatedColumns.find(c => c.name === 'ext_total')) {
+        setCalculatedColumns(prev => [...prev, newCalcCol]);
+      }
+    }
+  }, [detectedColumns, calculatedColumns]);
+
+  const filteredData = useMemo(() => {
+    let result = [...data];
+    
+    const catCol = detectedColumns.category || detectedColumns.account;
+    if (selectedCategory !== 'all' && catCol) {
+      result = result.filter(row => row[catCol] === selectedCategory);
+    }
+    
+    Object.entries(filters).forEach(([col, value]) => {
+      if (value) {
+        result = result.filter(row => 
+          String(row[col] || '').toLowerCase().includes(value.toLowerCase())
+        );
+      }
+    });
+    
+    if (sortConfig.key) {
+      result.sort((a, b) => {
+        let aVal = a[sortConfig.key];
+        let bVal = b[sortConfig.key];
+        
+        const calcCol = calculatedColumns.find(c => c.name === sortConfig.key);
+        if (calcCol) {
+          aVal = calcCol.calculate(a);
+          bVal = calcCol.calculate(b);
+        }
+        
+        if (aVal === null || aVal === undefined) return 1;
+        if (bVal === null || bVal === undefined) return -1;
+        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+    
+    return result;
+  }, [data, filters, sortConfig, selectedCategory, detectedColumns, calculatedColumns]);
+
+  const stats = useMemo(() => {
+    if (filteredData.length === 0) return null;
+    
+    const amountCol = detectedColumns.amount;
+    const qtyCol = detectedColumns.quantity;
+    
+    const result = { count: filteredData.length };
+    
+    if (amountCol) {
+      const amounts = filteredData.map(row => parseFloat(row[amountCol])).filter(v => !isNaN(v));
+      if (amounts.length > 0) {
+        result.total = amounts.reduce((a, b) => a + b, 0);
+        result.avg = result.total / amounts.length;
+        result.max = Math.max(...amounts);
+      }
+    }
+    
+    if (qtyCol) {
+      const qtys = filteredData.map(row => parseFloat(row[qtyCol])).filter(v => !isNaN(v));
+      if (qtys.length > 0) {
+        result.totalQty = qtys.reduce((a, b) => a + b, 0);
+      }
+    }
+    
+    if (calculatedColumns.find(c => c.name === 'ext_total')) {
+      result.extendedTotal = filteredData.reduce((sum, row) => {
+        const calc = calculatedColumns.find(c => c.name === 'ext_total');
+        return sum + (calc ? calc.calculate(row) : 0);
+      }, 0);
+    }
+    
+    return result;
+  }, [filteredData, detectedColumns, calculatedColumns]);
+
+  const categoryBreakdown = useMemo(() => {
+    const catCol = detectedColumns.category || detectedColumns.account;
+    const amountCol = detectedColumns.amount;
+    const qtyCol = detectedColumns.quantity;
+    
+    if (!catCol) return [];
+    
+    const breakdown = {};
+    data.forEach(row => {
+      const cat = row[catCol];
+      if (!cat) return;
+      
+      if (!breakdown[cat]) {
+        breakdown[cat] = { name: String(cat).slice(0, 25), value: 0, qty: 0, count: 0 };
+      }
+      
+      breakdown[cat].count++;
+      
+      if (amountCol && qtyCol && calculatedColumns.find(c => c.name === 'ext_total')) {
+        const calc = calculatedColumns.find(c => c.name === 'ext_total');
+        breakdown[cat].value += calc.calculate(row);
+      } else if (amountCol) {
+        breakdown[cat].value += parseFloat(row[amountCol]) || 0;
+      }
+      
+      if (qtyCol) {
+        breakdown[cat].qty += parseFloat(row[qtyCol]) || 0;
+      }
+    });
+    
+    return Object.values(breakdown).sort((a, b) => b.value - a.value).slice(0, 10);
+  }, [data, detectedColumns, calculatedColumns]);
+
+  const timeSeriesData = useMemo(() => {
+    const dateCol = detectedColumns.date;
+    const amountCol = detectedColumns.amount;
+    
+    if (!dateCol || !amountCol) return [];
+    
+    const dataToUse = selectedCategory === 'all' ? data : filteredData;
+    const byDate = {};
+    
+    dataToUse.forEach(row => {
+      const dateVal = row[dateCol];
+      if (!dateVal) return;
+      
+      let dateStr;
+      if (typeof dateVal === 'string') {
+        const isoMatch = dateVal.match(/\d{4}-\d{2}-\d{2}/);
+        if (isoMatch) {
+          dateStr = isoMatch[0];
+        } else {
+          const date = new Date(dateVal);
+          if (!isNaN(date.getTime())) {
+            dateStr = date.toISOString().split('T')[0];
+          }
+        }
+      }
+      
+      if (!dateStr) return;
+      byDate[dateStr] = (byDate[dateStr] || 0) + (parseFloat(row[amountCol]) || 0);
+    });
+    
+    return Object.entries(byDate)
+      .map(([date, value]) => ({ date, value }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [data, filteredData, detectedColumns, selectedCategory]);
+
+  const handleSort = (key) => {
+    setSortConfig(prev => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const formatNumber = (num, prefix = '$') => {
+    if (num === null || num === undefined || isNaN(num)) return '-';
+    if (Math.abs(num) >= 1000000) return `${prefix}${(num / 1000000).toFixed(2)}M`;
+    if (Math.abs(num) >= 1000) return `${prefix}${(num / 1000).toFixed(1)}K`;
+    return `${prefix}${num.toFixed(2)}`;
+  };
+
+  const formatCell = (value, type) => {
+    if (value === null || value === undefined) return <span style={{ opacity: 0.3 }}>—</span>;
+    if (type === 'number' && !isNaN(value)) {
+      return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return String(value);
+  };
+
+  const exportCSV = () => {
+    const allCols = [...columns, ...calculatedColumns.map(c => c.name)];
+    const csvRows = [allCols.join(',')];
+    
+    filteredData.forEach(row => {
+      const values = allCols.map(col => {
+        const calcCol = calculatedColumns.find(c => c.name === col);
+        const val = calcCol ? calcCol.calculate(row) : row[col];
+        if (val === null || val === undefined) return '';
+        if (typeof val === 'string' && (val.includes(',') || val.includes('"'))) {
+          return `"${val.replace(/"/g, '""')}"`;
+        }
+        return val;
+      });
+      csvRows.push(values.join(','));
+    });
+    
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeTable}_export.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(145deg, #0d0d12 0%, #1a1a2e 40%, #16213e 100%)',
+      fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
+      color: '#e0e0e0',
+      padding: '20px 24px'
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+        
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; }
+        
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
+        ::-webkit-scrollbar-thumb { background: #00F5D4; border-radius: 3px; }
+        
+        .glow { text-shadow: 0 0 20px rgba(0, 245, 212, 0.4); }
+        
+        .card {
+          background: rgba(20, 20, 35, 0.9);
+          border: 1px solid rgba(0, 245, 212, 0.15);
+          border-radius: 10px;
+          backdrop-filter: blur(10px);
+        }
+        
+        .btn {
+          background: linear-gradient(135deg, #00F5D4, #00BBF9);
+          border: none;
+          padding: 10px 20px;
+          border-radius: 6px;
+          color: #0a0a0f;
+          font-weight: 600;
+          cursor: pointer;
+          font-family: inherit;
+          font-size: 12px;
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .btn:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 6px 20px rgba(0, 245, 212, 0.3);
+        }
+        
+        .btn-ghost {
+          background: transparent;
+          border: 1px solid rgba(0, 245, 212, 0.25);
+          color: #00F5D4;
+        }
+        
+        .btn-ghost:hover { background: rgba(0, 245, 212, 0.1); }
+        .btn-ghost.active { background: rgba(0, 245, 212, 0.15); border-color: #00F5D4; }
+        
+        input, select {
+          background: rgba(10, 10, 15, 0.9);
+          border: 1px solid rgba(0, 245, 212, 0.2);
+          border-radius: 6px;
+          padding: 8px 12px;
+          color: #e0e0e0;
+          font-family: inherit;
+          font-size: 12px;
+        }
+        
+        input:focus, select:focus {
+          outline: none;
+          border-color: #00F5D4;
+        }
+        
+        table { width: 100%; border-collapse: collapse; }
+        
+        th {
+          background: rgba(0, 245, 212, 0.08);
+          padding: 12px 10px;
+          text-align: left;
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          color: #00F5D4;
+          cursor: pointer;
+          position: sticky;
+          top: 0;
+          white-space: nowrap;
+          border-bottom: 1px solid rgba(0, 245, 212, 0.2);
+        }
+        
+        th:hover { background: rgba(0, 245, 212, 0.15); }
+        
+        td {
+          padding: 10px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+          font-size: 12px;
+          max-width: 200px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        
+        tr:hover td { background: rgba(0, 245, 212, 0.03); }
+        
+        .stat-val {
+          font-family: 'Space Grotesk', sans-serif;
+          font-size: 24px;
+          font-weight: 700;
+          background: linear-gradient(135deg, #00F5D4, #00BBF9);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+        }
+        
+        .upload-zone {
+          border: 2px dashed rgba(0, 245, 212, 0.25);
+          border-radius: 12px;
+          padding: 50px;
+          text-align: center;
+          cursor: pointer;
+          transition: all 0.3s;
+        }
+        
+        .upload-zone:hover {
+          border-color: #00F5D4;
+          background: rgba(0, 245, 212, 0.03);
+        }
+        
+        .tag {
+          display: inline-block;
+          padding: 3px 8px;
+          border-radius: 4px;
+          font-size: 9px;
+          text-transform: uppercase;
+          letter-spacing: 0.3px;
+          font-weight: 600;
+        }
+        
+        .tag-number { background: rgba(0, 187, 249, 0.2); color: #00BBF9; }
+        .tag-text { background: rgba(254, 228, 64, 0.2); color: #FEE440; }
+        .tag-date { background: rgba(241, 91, 181, 0.2); color: #F15BB5; }
+        .tag-category { background: rgba(155, 93, 229, 0.2); color: #9B5DE5; }
+        .tag-calc { background: rgba(0, 245, 212, 0.2); color: #00F5D4; }
+        
+        .tab {
+          padding: 6px 14px;
+          background: rgba(10, 10, 15, 0.5);
+          border: 1px solid rgba(0, 245, 212, 0.15);
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 11px;
+          color: #e0e0e0;
+          transition: all 0.2s;
+        }
+        
+        .tab:hover { border-color: rgba(0, 245, 212, 0.4); }
+        .tab.active { background: rgba(0, 245, 212, 0.12); border-color: #00F5D4; color: #00F5D4; }
+      `}</style>
+
+      {/* Header */}
+      <div style={{ marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 26, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700 }} className="glow">
+            DATA<span style={{ color: '#00BBF9' }}>_</span>EXPLORER
+          </h1>
+          <p style={{ margin: '4px 0 0', opacity: 0.5, fontSize: 11 }}>
+            SQL • CSV • Excel • BOM → Instant insights
+          </p>
+        </div>
+        {fileName && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <span style={{ opacity: 0.5, fontSize: 12 }}>📁 {fileName}</span>
+            <span style={{ color: '#00F5D4', fontSize: 12, fontWeight: 500 }}>{data.length} rows</span>
+            <button className="btn btn-ghost" onClick={exportCSV} style={{ padding: '6px 12px' }}>
+              ⬇️ Export
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Upload Zone */}
+      {Object.keys(tables).length === 0 && (
+        <div style={{ marginBottom: 24 }}>
+          {/* File Upload */}
+          <label className="upload-zone" style={{ display: 'block', marginBottom: 16 }}>
+            <input type="file" accept=".sql,.csv,.xlsx,.xls,.tsv" onChange={handleFileUpload} style={{ display: 'none' }} />
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🗄️</div>
+            <div style={{ fontSize: 16, fontFamily: "'Space Grotesk', sans-serif", marginBottom: 6 }}>
+              Drop your file here
+            </div>
+            <div style={{ opacity: 0.4, fontSize: 12, marginBottom: 16 }}>
+              .sql • .csv • .xlsx • .xls • .tsv
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+              <span className="tag tag-category">SQL dumps</span>
+              <span className="tag tag-number">Spreadsheets</span>
+              <span className="tag tag-date">BOMs</span>
+            </div>
+          </label>
+
+          {/* Divider */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '20px 0' }}>
+            <div style={{ flex: 1, height: 1, background: 'rgba(0, 245, 212, 0.2)' }} />
+            <span style={{ opacity: 0.5, fontSize: 12 }}>or load from URL</span>
+            <div style={{ flex: 1, height: 1, background: 'rgba(0, 245, 212, 0.2)' }} />
+          </div>
+
+          {/* URL Input */}
+          <div className="card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                placeholder="Paste URL to .sql, .csv, or Google Sheet..."
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleURLFetch()}
+                style={{ flex: 1, minWidth: 250 }}
+              />
+              <button 
+                className="btn" 
+                onClick={handleURLFetch}
+                disabled={isLoading || !urlInput.trim()}
+                style={{ opacity: isLoading || !urlInput.trim() ? 0.5 : 1 }}
+              >
+                {isLoading ? '⏳ Loading...' : '🔗 Load URL'}
+              </button>
+            </div>
+            
+            <div style={{ marginTop: 12, fontSize: 11, opacity: 0.5 }}>
+              Works with: Raw GitHub links, public CSV URLs, Google Sheets (public/anyone with link)
+            </div>
+
+            {loadError && (
+              <div style={{ marginTop: 12, padding: 12, background: 'rgba(255, 100, 100, 0.1)', borderRadius: 6, fontSize: 12, color: '#ff6b6b' }}>
+                ⚠️ {loadError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Parse Log */}
+      {parseLog.length > 0 && Object.keys(tables).length === 0 && (
+        <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+          {parseLog.map((log, i) => (
+            <div key={i} style={{ padding: '4px 0', fontSize: 12, opacity: 0.8 }}>{log}</div>
+          ))}
+        </div>
+      )}
+
+      {/* Main Content */}
+      {Object.keys(tables).length > 0 && (
+        <>
+          {/* Table Tabs */}
+          {Object.keys(tables).length > 1 && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ opacity: 0.5, fontSize: 11 }}>Tables:</span>
+              {Object.keys(tables).map(tableName => (
+                <button
+                  key={tableName}
+                  className={`tab ${activeTable === tableName ? 'active' : ''}`}
+                  onClick={() => switchTable(tableName)}
+                >
+                  {tableName} ({tables[tableName].length})
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Schema Display */}
+          <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.5 }}>
+                Columns — {activeTable}
+              </span>
+              {detectedColumns.quantity && detectedColumns.amount && !calculatedColumns.find(c => c.name === 'ext_total') && (
+                <button className="btn" onClick={addCalculatedColumn} style={{ padding: '5px 12px', fontSize: 10 }}>
+                  ➕ Add Qty × Price
+                </button>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {columns.map(col => (
+                <div key={col} style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 6,
+                  padding: '6px 10px',
+                  background: 'rgba(10, 10, 15, 0.5)',
+                  borderRadius: 6,
+                  fontSize: 11
+                }}>
+                  <span>{col}</span>
+                  <span className={`tag tag-${columnTypes[col]}`}>{columnTypes[col]}</span>
+                  {col === detectedColumns.account && <span title="Account/Name">👤</span>}
+                  {col === detectedColumns.amount && <span title="Amount/Cost">💰</span>}
+                  {col === detectedColumns.quantity && <span title="Quantity">📦</span>}
+                  {col === detectedColumns.date && <span title="Date">📅</span>}
+                  {col === detectedColumns.category && <span title="Category">🏷️</span>}
+                  {col === detectedColumns.partNumber && <span title="Part Number">🔧</span>}
+                </div>
+              ))}
+              {calculatedColumns.map(col => (
+                <div key={col.name} style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 6,
+                  padding: '6px 10px',
+                  background: 'rgba(0, 245, 212, 0.1)',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  border: '1px solid rgba(0, 245, 212, 0.3)'
+                }}>
+                  <span>{col.label}</span>
+                  <span className="tag tag-calc">calc</span>
+                  <span title={col.formula}>🧮</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Stats */}
+          {stats && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
+              <div className="card" style={{ padding: 16 }}>
+                <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.5, marginBottom: 6 }}>Records</div>
+                <div className="stat-val">{stats.count.toLocaleString()}</div>
+              </div>
+              {stats.total !== undefined && (
+                <div className="card" style={{ padding: 16 }}>
+                  <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.5, marginBottom: 6 }}>Total</div>
+                  <div className="stat-val">{formatNumber(stats.total)}</div>
+                </div>
+              )}
+              {stats.avg !== undefined && (
+                <div className="card" style={{ padding: 16 }}>
+                  <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.5, marginBottom: 6 }}>Average</div>
+                  <div className="stat-val">{formatNumber(stats.avg)}</div>
+                </div>
+              )}
+              {stats.totalQty !== undefined && (
+                <div className="card" style={{ padding: 16 }}>
+                  <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.5, marginBottom: 6 }}>Total Qty</div>
+                  <div className="stat-val">{formatNumber(stats.totalQty, '')}</div>
+                </div>
+              )}
+              {stats.extendedTotal !== undefined && (
+                <div className="card" style={{ padding: 16 }}>
+                  <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.5, marginBottom: 6 }}>Extended Total</div>
+                  <div className="stat-val">{formatNumber(stats.extendedTotal)}</div>
+                </div>
+              )}
+              {stats.max !== undefined && (
+                <div className="card" style={{ padding: 16 }}>
+                  <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.5, marginBottom: 6 }}>Largest</div>
+                  <div className="stat-val">{formatNumber(stats.max)}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Filters & Controls */}
+          <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                {uniqueCategories.length > 0 && (
+                  <select 
+                    value={selectedCategory} 
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    style={{ minWidth: 180 }}
+                  >
+                    <option value="all">All ({uniqueCategories.length} groups)</option>
+                    {uniqueCategories.slice(0, 100).map(cat => (
+                      <option key={cat} value={cat}>{String(cat).slice(0, 40)}</option>
+                    ))}
+                  </select>
+                )}
+                {columns.slice(0, 4).map(col => (
+                  <input
+                    key={col}
+                    type="text"
+                    placeholder={`${col}...`}
+                    value={filters[col] || ''}
+                    onChange={(e) => setFilters(prev => ({ ...prev, [col]: e.target.value }))}
+                    style={{ width: 120 }}
+                  />
+                ))}
+                {Object.values(filters).some(v => v) && (
+                  <button className="btn btn-ghost" onClick={() => setFilters({})} style={{ padding: '6px 12px' }}>
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button 
+                  className={`btn btn-ghost ${activeView === 'table' ? 'active' : ''}`}
+                  onClick={() => setActiveView('table')}
+                  style={{ padding: '6px 14px' }}
+                >
+                  📋 Table
+                </button>
+                <button 
+                  className={`btn btn-ghost ${activeView === 'charts' ? 'active' : ''}`}
+                  onClick={() => setActiveView('charts')}
+                  style={{ padding: '6px 14px' }}
+                >
+                  📊 Charts
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Table View */}
+          {activeView === 'table' && (
+            <div className="card" style={{ overflow: 'hidden' }}>
+              <div style={{ maxHeight: 500, overflow: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      {columns.map(col => (
+                        <th key={col} onClick={() => handleSort(col)}>
+                          {col}
+                          {sortConfig.key === col && (
+                            <span style={{ marginLeft: 6 }}>
+                              {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                            </span>
+                          )}
+                        </th>
+                      ))}
+                      {calculatedColumns.map(col => (
+                        <th key={col.name} onClick={() => handleSort(col.name)} style={{ background: 'rgba(0, 245, 212, 0.12)' }}>
+                          {col.label}
+                          {sortConfig.key === col.name && (
+                            <span style={{ marginLeft: 6 }}>
+                              {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                            </span>
+                          )}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredData.slice(0, 300).map((row, idx) => (
+                      <tr key={row._id ?? idx}>
+                        {columns.map(col => (
+                          <td key={col} style={{ 
+                            color: columnTypes[col] === 'number' ? '#00F5D4' : 'inherit',
+                            fontVariantNumeric: columnTypes[col] === 'number' ? 'tabular-nums' : 'normal'
+                          }}>
+                            {formatCell(row[col], columnTypes[col])}
+                          </td>
+                        ))}
+                        {calculatedColumns.map(col => (
+                          <td key={col.name} style={{ color: '#00F5D4', fontVariantNumeric: 'tabular-nums', background: 'rgba(0, 245, 212, 0.03)' }}>
+                            {col.calculate(row).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {filteredData.length > 300 && (
+                <div style={{ padding: 12, textAlign: 'center', opacity: 0.5, fontSize: 11, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                  Showing 300 of {filteredData.length} rows
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Charts View */}
+          {activeView === 'charts' && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 20 }}>
+              {categoryBreakdown.length > 0 && (
+                <div className="card" style={{ padding: 20 }}>
+                  <h3 style={{ margin: '0 0 16px', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.7 }}>
+                    By {detectedColumns.category || detectedColumns.account || 'Category'}
+                  </h3>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={categoryBreakdown} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                      <XAxis type="number" stroke="#555" tickFormatter={(v) => formatNumber(v)} tick={{ fontSize: 10 }} />
+                      <YAxis type="category" dataKey="name" stroke="#555" width={90} tick={{ fontSize: 10 }} />
+                      <Tooltip 
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
+                        formatter={(value) => [formatNumber(value), 'Total']}
+                      />
+                      <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                        {categoryBreakdown.map((_, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {categoryBreakdown.length > 0 && (
+                <div className="card" style={{ padding: 20 }}>
+                  <h3 style={{ margin: '0 0 16px', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.7 }}>
+                    Distribution
+                  </h3>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <PieChart>
+                      <Pie
+                        data={categoryBreakdown.slice(0, 8)}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={45}
+                        outerRadius={80}
+                        paddingAngle={2}
+                        dataKey="value"
+                      >
+                        {categoryBreakdown.slice(0, 8).map((_, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip 
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
+                        formatter={(value) => [formatNumber(value), 'Value']}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 8 }}>
+                    {categoryBreakdown.slice(0, 8).map((entry, index) => (
+                      <div key={entry.name} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10 }}>
+                        <div style={{ width: 8, height: 8, borderRadius: 2, background: COLORS[index % COLORS.length] }} />
+                        {entry.name}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {timeSeriesData.length > 1 && (
+                <div className="card" style={{ padding: 20, gridColumn: '1 / -1' }}>
+                  <h3 style={{ margin: '0 0 16px', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.7 }}>
+                    {selectedCategory === 'all' ? 'All Data' : selectedCategory} — Over Time
+                  </h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={timeSeriesData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                      <XAxis dataKey="date" stroke="#555" tick={{ fontSize: 10 }} />
+                      <YAxis stroke="#555" tickFormatter={(v) => formatNumber(v)} tick={{ fontSize: 10 }} />
+                      <Tooltip 
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
+                        formatter={(value) => [formatNumber(value), 'Amount']}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="value" 
+                        stroke="#00F5D4" 
+                        strokeWidth={2}
+                        dot={{ fill: '#00F5D4', strokeWidth: 0, r: 3 }}
+                        activeDot={{ r: 5, fill: '#00BBF9' }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {categoryBreakdown.length === 0 && timeSeriesData.length <= 1 && (
+                <div className="card" style={{ padding: 32, textAlign: 'center', opacity: 0.5, gridColumn: '1 / -1' }}>
+                  Charts need numeric columns (amounts, costs, quantities) or date columns to display.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Upload New */}
+          <div style={{ marginTop: 28, textAlign: 'center' }}>
+            <label>
+              <input type="file" accept=".sql,.csv,.xlsx,.xls,.tsv" onChange={handleFileUpload} style={{ display: 'none' }} />
+              <span className="btn btn-ghost" style={{ cursor: 'pointer' }}>
+                📁 Upload Different File
+              </span>
+            </label>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
