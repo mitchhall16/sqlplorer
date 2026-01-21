@@ -24,6 +24,7 @@ export default function App() {
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [groupByColumn, setGroupByColumn] = useState('');
   const [aggregationType, setAggregationType] = useState('sum'); // 'sum' or 'count'
+  const [topN, setTopN] = useState(0); // 0 = all, otherwise limit to top N
 
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
 
@@ -601,8 +602,10 @@ export default function App() {
 
     // Sort by aggregationType - either sum (value) or count
     const sortKey = aggregationType === 'count' ? 'count' : 'value';
-    return Object.values(breakdown).sort((a, b) => b[sortKey] - a[sortKey]);
-  }, [filteredData, detectedColumns, calculatedColumns, groupByColumn, aggregationType]);
+    const sorted = Object.values(breakdown).sort((a, b) => b[sortKey] - a[sortKey]);
+    // Apply topN limit if set
+    return topN > 0 ? sorted.slice(0, topN) : sorted;
+  }, [filteredData, detectedColumns, calculatedColumns, groupByColumn, aggregationType, topN]);
 
   const timeSeriesData = useMemo(() => {
     const dateCol = detectedColumns.date;
@@ -1195,6 +1198,18 @@ export default function App() {
                     🔢 # Transactions
                   </button>
                 </div>
+                <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 8 }}>Limit:</span>
+                <select
+                  value={topN}
+                  onChange={(e) => setTopN(Number(e.target.value))}
+                  style={{ minWidth: 80 }}
+                >
+                  <option value={0}>All</option>
+                  <option value={5}>Top 5</option>
+                  <option value={10}>Top 10</option>
+                  <option value={25}>Top 25</option>
+                  <option value={50}>Top 50</option>
+                </select>
               </div>
             )}
           </div>
