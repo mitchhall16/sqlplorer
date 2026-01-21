@@ -26,6 +26,7 @@ export default function App() {
   const [aggregationType, setAggregationType] = useState('sum'); // 'sum' or 'count'
   const [topN, setTopN] = useState(10); // default to top 10 for cleaner charts
   const [drilldown, setDrilldown] = useState({ level: 'overview', cardId: null, programId: null, programName: null }); // drill-down state
+  const [showParseLog, setShowParseLog] = useState(true);
   const [dashboardSort, setDashboardSort] = useState({ programs: { key: 'total_spend', dir: 'desc' }, cards: { key: 'total_spend', dir: 'desc' }, drilldown: { key: 'date', dir: 'desc' } });
 
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
@@ -526,6 +527,7 @@ export default function App() {
       }
 
       setParseLog(updatedLogs);
+      setShowParseLog(true);
     } else {
       // Parse as CSV
       Papa.parse(content, {
@@ -1248,32 +1250,51 @@ export default function App() {
         </div>
       )}
 
-      {/* Parse Log - always show when there's a log */}
-      {parseLog.length > 0 && Object.keys(tables).length > 0 && (
+      {/* Parse Log - dismissible */}
+      {parseLog.length > 0 && Object.keys(tables).length > 0 && showParseLog && (
         <div className="card" style={{
-          padding: 16,
+          padding: 12,
           marginBottom: 20,
           background: parseLog.some(l => l.includes('⚠️')) ? 'rgba(255,150,50,0.05)' : 'rgba(0,245,212,0.05)',
           borderColor: parseLog.some(l => l.includes('⚠️')) ? 'rgba(255,150,50,0.2)' : 'rgba(0,245,212,0.2)'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 500 }}>
-              {parseLog.some(l => l.includes('⚠️')) ? '⚠️ Data Issues Found' : '✅ Data Loaded Successfully'}
-            </span>
-            <span style={{ fontSize: 11, opacity: 0.6 }}>
-              {Object.keys(tables).length} tables • {Object.values(tables).reduce((s, t) => s + t.length, 0).toLocaleString()} rows
-            </span>
-          </div>
-          {parseLog.map((log, i) => (
-            <div key={i} style={{
-              padding: '3px 0',
-              fontSize: 12,
-              fontFamily: 'monospace',
-              color: log.includes('⚠️') ? '#ffaa50' : log.includes('❌') ? '#ff6b6b' : log.includes('✅') || log.includes('🔗') ? '#00F5D4' : '#e0e0e0'
-            }}>
-              {log}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: 12, fontWeight: 500 }}>
+                {parseLog.some(l => l.includes('⚠️')) ? '⚠️ Data Issues Found' : '✅ Data Loaded'}
+              </span>
+              <span style={{ fontSize: 11, opacity: 0.5 }}>
+                {Object.keys(tables).length} tables • {Object.values(tables).reduce((s, t) => s + t.length, 0).toLocaleString()} rows
+              </span>
             </div>
-          ))}
+            <button
+              onClick={() => setShowParseLog(false)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#888',
+                cursor: 'pointer',
+                fontSize: 16,
+                padding: '0 4px'
+              }}
+            >
+              ✕
+            </button>
+          </div>
+          {parseLog.some(l => l.includes('⚠️') || l.includes('Sample')) && (
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+              {parseLog.filter(l => l.includes('⚠️') || l.includes('Sample') || l.includes('🔗')).map((log, i) => (
+                <div key={i} style={{
+                  padding: '2px 0',
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  color: log.includes('⚠️') ? '#ffaa50' : '#e0e0e0'
+                }}>
+                  {log}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
