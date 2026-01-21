@@ -29,6 +29,27 @@ export default function App() {
 
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
 
+  // Find amount column in joined data
+  const amountColumn = useMemo(() => {
+    const joined = tables['transactions_joined'];
+    if (!joined || joined.length === 0) return null;
+
+    const cols = Object.keys(joined[0]);
+    const amountPatterns = ['amount', 'total', 'price', 'cost', 'spend', 'value'];
+
+    for (const col of cols) {
+      const colLower = col.toLowerCase();
+      if (amountPatterns.some(p => colLower.includes(p))) {
+        // Check if it's actually numeric
+        const sample = joined.slice(0, 10).map(r => r[col]);
+        if (sample.some(v => !isNaN(parseFloat(v)))) {
+          return col;
+        }
+      }
+    }
+    return null;
+  }, [tables]);
+
   // Compute card summaries from transactions_joined
   const cardSummaries = useMemo(() => {
     const joined = tables['transactions_joined'];
@@ -47,11 +68,12 @@ export default function App() {
         };
       }
       byCard[cardId].transaction_count++;
-      byCard[cardId].total_spend += parseFloat(txn.amount) || 0;
+      const amt = amountColumn ? parseFloat(txn[amountColumn]) || 0 : 0;
+      byCard[cardId].total_spend += amt;
     });
 
     return Object.values(byCard).sort((a, b) => b.total_spend - a.total_spend);
-  }, [tables]);
+  }, [tables, amountColumn]);
 
   // Compute program summaries from transactions_joined
   const programSummaries = useMemo(() => {
@@ -77,7 +99,8 @@ export default function App() {
         cardsByProgram[key] = new Set();
       }
       byProgram[key].transaction_count++;
-      byProgram[key].total_spend += parseFloat(txn.amount) || 0;
+      const amt = amountColumn ? parseFloat(txn[amountColumn]) || 0 : 0;
+      byProgram[key].total_spend += amt;
       cardsByProgram[key].add(txn.card_id);
     });
 
@@ -87,7 +110,7 @@ export default function App() {
     });
 
     return Object.values(byProgram).sort((a, b) => b.total_spend - a.total_spend);
-  }, [tables]);
+  }, [tables, amountColumn]);
 
   // Get transactions for drilldown
   const drilldownData = useMemo(() => {
@@ -1489,7 +1512,7 @@ export default function App() {
                     </span>
                     <span style={{ fontSize: 11, opacity: 0.5 }}>
                       {drilldownData.length} transactions |
-                      Total: ${drilldownData.reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      Total: ${drilldownData.reduce((sum, t) => sum + (amountColumn ? parseFloat(t[amountColumn]) || 0 : 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </h3>
                   <div style={{ maxHeight: 500, overflow: 'auto' }}>
@@ -1509,7 +1532,7 @@ export default function App() {
                             <td>#{txn.card_id}</td>
                             <td style={{ opacity: 0.7 }}>{txn.card_program_name}</td>
                             <td style={{ textAlign: 'right', color: '#00F5D4', fontVariantNumeric: 'tabular-nums' }}>
-                              ${(parseFloat(txn.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              ${(amountColumn ? parseFloat(txn[amountColumn]) || 0 : 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
                           </tr>
                         ))}
