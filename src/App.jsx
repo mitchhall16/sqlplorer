@@ -446,12 +446,11 @@ export default function App() {
     return [...months].map(m => JSON.parse(m)).sort((a, b) => a.key.localeCompare(b.key));
   }, [data, detectedColumns]);
 
-  // Get groupable columns (text/category columns)
+  // Get groupable columns (all non-numeric columns, but allow all for flexibility)
   const groupableColumns = useMemo(() => {
-    return columns.filter(col =>
-      columnTypes[col] === 'category' || columnTypes[col] === 'text'
-    );
-  }, [columns, columnTypes]);
+    // Return all columns - let user decide what to group by
+    return columns;
+  }, [columns]);
 
   const addCalculatedColumn = useCallback(() => {
     const qtyCol = detectedColumns.quantity;
@@ -1114,8 +1113,8 @@ export default function App() {
                     style={{ minWidth: 180 }}
                   >
                     <option value="all">All ({uniqueCategories.length} groups)</option>
-                    {uniqueCategories.slice(0, 100).map(cat => (
-                      <option key={cat} value={cat}>{String(cat).slice(0, 40)}</option>
+                    {uniqueCategories.map(cat => (
+                      <option key={cat} value={cat}>{String(cat)}</option>
                     ))}
                   </select>
                 )}
@@ -1203,7 +1202,7 @@ export default function App() {
           {/* Table View */}
           {activeView === 'table' && (
             <div className="card" style={{ overflow: 'hidden' }}>
-              <div style={{ maxHeight: 500, overflow: 'auto' }}>
+              <div style={{ maxHeight: 600, overflow: 'auto' }}>
                 <table>
                   <thead>
                     <tr>
@@ -1230,10 +1229,10 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredData.slice(0, 300).map((row, idx) => (
+                    {filteredData.map((row, idx) => (
                       <tr key={row._id ?? idx}>
                         {columns.map(col => (
-                          <td key={col} style={{ 
+                          <td key={col} style={{
                             color: columnTypes[col] === 'number' ? '#00F5D4' : 'inherit',
                             fontVariantNumeric: columnTypes[col] === 'number' ? 'tabular-nums' : 'normal'
                           }}>
@@ -1250,11 +1249,9 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              {filteredData.length > 300 && (
-                <div style={{ padding: 12, textAlign: 'center', opacity: 0.5, fontSize: 11, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                  Showing 300 of {filteredData.length} rows
-                </div>
-              )}
+              <div style={{ padding: 12, textAlign: 'center', opacity: 0.5, fontSize: 11, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                {filteredData.length.toLocaleString()} rows
+              </div>
             </div>
           )}
 
@@ -1306,15 +1303,15 @@ export default function App() {
                   <ResponsiveContainer width="100%" height={220}>
                     <PieChart>
                       <Pie
-                        data={categoryBreakdown.slice(0, 8)}
+                        data={categoryBreakdown}
                         cx="50%"
                         cy="50%"
                         innerRadius={45}
                         outerRadius={80}
-                        paddingAngle={2}
+                        paddingAngle={1}
                         dataKey={aggregationType === 'count' ? 'count' : 'value'}
                       >
-                        {categoryBreakdown.slice(0, 8).map((_, index) => (
+                        {categoryBreakdown.map((_, index) => (
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                         ))}
                       </Pie>
@@ -1324,9 +1321,9 @@ export default function App() {
                       />
                     </PieChart>
                   </ResponsiveContainer>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 8 }}>
-                    {categoryBreakdown.slice(0, 8).map((entry, index) => (
-                      <div key={entry.name} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10 }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 8 }}>
+                    {categoryBreakdown.map((entry, index) => (
+                      <div key={entry.name} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9 }}>
                         <div style={{ width: 8, height: 8, borderRadius: 2, background: COLORS[index % COLORS.length] }} />
                         {entry.name}
                       </div>
