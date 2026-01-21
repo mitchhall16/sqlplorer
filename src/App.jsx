@@ -24,7 +24,7 @@ export default function App() {
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [groupByColumn, setGroupByColumn] = useState('');
   const [aggregationType, setAggregationType] = useState('sum'); // 'sum' or 'count'
-  const [topN, setTopN] = useState(0); // 0 = all, otherwise limit to top N
+  const [topN, setTopN] = useState(10); // default to top 10 for cleaner charts
 
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
 
@@ -654,16 +654,24 @@ export default function App() {
   const timeSeriesData = useMemo(() => {
     const dateCol = detectedColumns.date;
     const amountCol = detectedColumns.amount;
-    
-    if (!dateCol || !amountCol) return [];
-    
-    const dataToUse = selectedCategory === 'all' ? data : filteredData;
-    const byDate = {};
-    
-    dataToUse.forEach(row => {
+    const catCol = groupByColumn || detectedColumns.category || detectedColumns.account;
+
+    if (!dateCol || !amountCol) return { data: [], categories: [] };
+
+    // Get top categories from categoryBreakdown
+    const topCategories = categoryBreakdown.map(c => c.fullName);
+
+    const byDateAndCat = {};
+    const allDates = new Set();
+
+    filteredData.forEach(row => {
       const dateVal = row[dateCol];
+      const cat = catCol ? row[catCol] : 'All';
       if (!dateVal) return;
-      
+
+      // Only include top categories if we have them
+      if (catCol && topCategories.length > 0 && !topCategories.includes(cat)) return;
+
       let dateStr;
       if (typeof dateVal === 'string') {
         const isoMatch = dateVal.match(/\d{4}-\d{2}-\d{2}/);
@@ -676,15 +684,27 @@ export default function App() {
           }
         }
       }
-      
+
       if (!dateStr) return;
-      byDate[dateStr] = (byDate[dateStr] || 0) + (parseFloat(row[amountCol]) || 0);
+      allDates.add(dateStr);
+
+      if (!byDateAndCat[dateStr]) byDateAndCat[dateStr] = {};
+      byDateAndCat[dateStr][cat] = (byDateAndCat[dateStr][cat] || 0) + (parseFloat(row[amountCol]) || 0);
     });
-    
-    return Object.entries(byDate)
-      .map(([date, value]) => ({ date, value }))
-      .sort((a, b) => a.date.localeCompare(b.date));
-  }, [data, filteredData, detectedColumns, selectedCategory]);
+
+    const sortedDates = [...allDates].sort();
+    const categories = topCategories.length > 0 ? topCategories : ['All'];
+
+    const chartData = sortedDates.map(date => {
+      const row = { date };
+      categories.forEach(cat => {
+        row[cat] = byDateAndCat[date]?.[cat] || 0;
+      });
+      return row;
+    });
+
+    return { data: chartData, categories };
+  }, [filteredData, detectedColumns, groupByColumn, categoryBreakdown]);
 
   const handleSort = (key) => {
     setSortConfig(prev => ({
@@ -1334,7 +1354,9 @@ export default function App() {
                       />
                       <YAxis type="category" dataKey="name" stroke="#555" width={100} tick={{ fontSize: 10 }} />
                       <Tooltip
-                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11, color: '#e0e0e0' }}
+                        labelStyle={{ color: '#e0e0e0' }}
+                        itemStyle={{ color: '#e0e0e0' }}
                         formatter={(value, name, props) => {
                           const item = props.payload;
                           if (aggregationType === 'count') {
@@ -1375,7 +1397,9 @@ export default function App() {
                         ))}
                       </Pie>
                       <Tooltip
-                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11, color: '#e0e0e0' }}
+                        labelStyle={{ color: '#e0e0e0' }}
+                        itemStyle={{ color: '#e0e0e0' }}
                         formatter={(value) => aggregationType === 'count' ? [`${value.toLocaleString()} transactions`, ''] : [formatNumber(value), '']}
                       />
                     </PieChart>
@@ -1391,34 +1415,48 @@ export default function App() {
                 </div>
               )}
 
-              {timeSeriesData.length > 1 && (
+              {timeSeriesData.data.length > 1 && (
                 <div className="card" style={{ padding: 20, gridColumn: '1 / -1' }}>
                   <h3 style={{ margin: '0 0 16px', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.7 }}>
-                    {selectedCategory === 'all' ? 'All Data' : selectedCategory} — Over Time
+                    Spend Over Time by {groupByColumn || detectedColumns.category || detectedColumns.account || 'Category'}
                   </h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <LineChart data={timeSeriesData}>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={timeSeriesData.data}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
                       <XAxis dataKey="date" stroke="#555" tick={{ fontSize: 10 }} />
                       <YAxis stroke="#555" tickFormatter={(v) => formatNumber(v)} tick={{ fontSize: 10 }} />
-                      <Tooltip 
-                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
-                        formatter={(value) => [formatNumber(value), 'Amount']}
+                      <Tooltip
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11, color: '#e0e0e0' }}
+                        labelStyle={{ color: '#e0e0e0' }}
+                        itemStyle={{ color: '#e0e0e0' }}
+                        formatter={(value, name) => [formatNumber(value), name]}
                       />
-                      <Line 
-                        type="monotone" 
-                        dataKey="value" 
-                        stroke="#00F5D4" 
-                        strokeWidth={2}
-                        dot={{ fill: '#00F5D4', strokeWidth: 0, r: 3 }}
-                        activeDot={{ r: 5, fill: '#00BBF9' }}
-                      />
+                      {timeSeriesData.categories.map((cat, idx) => (
+                        <Line
+                          key={cat}
+                          type="monotone"
+                          dataKey={cat}
+                          name={cat}
+                          stroke={COLORS[idx % COLORS.length]}
+                          strokeWidth={2}
+                          dot={false}
+                          activeDot={{ r: 4, fill: COLORS[idx % COLORS.length] }}
+                        />
+                      ))}
                     </LineChart>
                   </ResponsiveContainer>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 12 }}>
+                    {timeSeriesData.categories.map((cat, idx) => (
+                      <div key={cat} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10 }}>
+                        <div style={{ width: 12, height: 3, borderRadius: 2, background: COLORS[idx % COLORS.length] }} />
+                        {String(cat).slice(0, 20)}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {categoryBreakdown.length === 0 && timeSeriesData.length <= 1 && (
+              {categoryBreakdown.length === 0 && timeSeriesData.data.length <= 1 && (
                 <div className="card" style={{ padding: 32, textAlign: 'center', opacity: 0.5, gridColumn: '1 / -1' }}>
                   Charts need numeric columns (amounts, costs, quantities) or date columns to display.
                 </div>
