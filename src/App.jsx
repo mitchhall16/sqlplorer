@@ -1248,24 +1248,28 @@ export default function App() {
         </div>
       )}
 
-      {/* Parse Log */}
       {/* Parse Log - always show when there's a log */}
-      {parseLog.length > 0 && (
-        <div className="card" style={{ padding: 16, marginBottom: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: parseLog.some(l => l.includes('⚠️')) ? 8 : 0 }}>
-            <span style={{ fontSize: 11, opacity: 0.5, textTransform: 'uppercase' }}>Parse Log</span>
-            {Object.keys(tables).length > 0 && (
-              <span style={{ fontSize: 11, color: '#00F5D4' }}>
-                {Object.keys(tables).length} tables loaded
-              </span>
-            )}
+      {parseLog.length > 0 && Object.keys(tables).length > 0 && (
+        <div className="card" style={{
+          padding: 16,
+          marginBottom: 20,
+          background: parseLog.some(l => l.includes('⚠️')) ? 'rgba(255,150,50,0.05)' : 'rgba(0,245,212,0.05)',
+          borderColor: parseLog.some(l => l.includes('⚠️')) ? 'rgba(255,150,50,0.2)' : 'rgba(0,245,212,0.2)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 500 }}>
+              {parseLog.some(l => l.includes('⚠️')) ? '⚠️ Data Issues Found' : '✅ Data Loaded Successfully'}
+            </span>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>
+              {Object.keys(tables).length} tables • {Object.values(tables).reduce((s, t) => s + t.length, 0).toLocaleString()} rows
+            </span>
           </div>
           {parseLog.map((log, i) => (
             <div key={i} style={{
-              padding: '4px 0',
+              padding: '3px 0',
               fontSize: 12,
-              color: log.includes('⚠️') ? '#ffaa50' : log.includes('❌') ? '#ff6b6b' : log.includes('✅') || log.includes('🔗') ? '#00F5D4' : '#e0e0e0',
-              opacity: log.includes('⚠️') || log.includes('❌') ? 1 : 0.8
+              fontFamily: 'monospace',
+              color: log.includes('⚠️') ? '#ffaa50' : log.includes('❌') ? '#ff6b6b' : log.includes('✅') || log.includes('🔗') ? '#00F5D4' : '#e0e0e0'
             }}>
               {log}
             </div>
@@ -1527,12 +1531,22 @@ export default function App() {
                 </div>
               )}
 
-              {/* Warning for unmatched data */}
+              {/* Warning for unmatched data - show parse log details */}
               {drilldown.level === 'overview' && programSummaries.some(p => p.card_program_name === 'Unknown Program') && (
-                <div className="card" style={{ padding: 12, marginBottom: 20, background: 'rgba(255,150,50,0.1)', borderColor: 'rgba(255,150,50,0.3)' }}>
-                  <div style={{ fontSize: 12, color: '#ffaa50' }}>
-                    ⚠️ Some transactions couldn't be matched to card programs. This usually means card_id values in transactions don't exist in the cards table.
+                <div className="card" style={{ padding: 16, marginBottom: 20, background: 'rgba(255,150,50,0.1)', borderColor: 'rgba(255,150,50,0.3)' }}>
+                  <div style={{ fontSize: 13, color: '#ffaa50', fontWeight: 500, marginBottom: 8 }}>
+                    ⚠️ Some transactions couldn't be matched to card programs
                   </div>
+                  <div style={{ fontSize: 12, color: '#e0e0e0', opacity: 0.8 }}>
+                    {parseLog.filter(l => l.includes('⚠️') || l.includes('Sample') || l.includes('Joined')).map((log, i) => (
+                      <div key={i} style={{ padding: '2px 0', fontFamily: 'monospace' }}>{log}</div>
+                    ))}
+                  </div>
+                  {parseLog.filter(l => l.includes('Sample')).length === 0 && (
+                    <div style={{ fontSize: 11, opacity: 0.6, marginTop: 8 }}>
+                      Check the Parse Log above for details, or card_id values in transactions may not exist in the cards table.
+                    </div>
+                  )}
                 </div>
               )}
 
