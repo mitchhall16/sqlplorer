@@ -433,9 +433,12 @@ export default function App() {
         if (parsedTables['transactions'] && parsedTables['cards'] && parsedTables['card_programs']) {
           // Create lookup maps - try both string and number keys for flexibility
           const cardsMap = {};
+          const cardIds = new Set();
           parsedTables['cards'].forEach(card => {
             cardsMap[card.id] = card;
             cardsMap[String(card.id)] = card;
+            cardIds.add(card.id);
+            cardIds.add(String(card.id));
           });
           const programsMap = {};
           parsedTables['card_programs'].forEach(prog => {
@@ -446,13 +449,19 @@ export default function App() {
           // Join transactions with cards and card_programs
           let matchedCards = 0;
           let matchedPrograms = 0;
+          const unmatchedCardIds = new Set();
+
           const joinedData = parsedTables['transactions'].map((txn, idx) => {
             // Try both the value and string version
             const card = cardsMap[txn.card_id] || cardsMap[String(txn.card_id)] || {};
             const programId = card.card_program_id;
             const program = programId ? (programsMap[programId] || programsMap[String(programId)]) : null;
 
-            if (Object.keys(card).length > 0) matchedCards++;
+            if (Object.keys(card).length > 0) {
+              matchedCards++;
+            } else {
+              unmatchedCardIds.add(txn.card_id);
+            }
             if (program) matchedPrograms++;
 
             let programName = 'Unknown Program';
@@ -472,10 +481,20 @@ export default function App() {
 
           parsedTables['transactions_joined'] = joinedData;
           const totalTxns = parsedTables['transactions'].length;
-          updatedLogs.push(`🔗 Joined: ${matchedCards}/${totalTxns} matched cards, ${matchedPrograms}/${totalTxns} matched programs`);
 
-          if (matchedCards < totalTxns * 0.5) {
-            updatedLogs.push(`⚠️ Low card match rate - check if card_id values exist in cards table`);
+          if (matchedCards === totalTxns) {
+            updatedLogs.push(`✅ All ${totalTxns} transactions matched to cards and programs`);
+          } else {
+            updatedLogs.push(`🔗 Joined: ${matchedCards}/${totalTxns} transactions matched cards (${Math.round(matchedCards/totalTxns*100)}%)`);
+          }
+
+          if (matchedCards < totalTxns) {
+            const unmatchedSample = [...unmatchedCardIds].slice(0, 5);
+            updatedLogs.push(`⚠️ ${unmatchedCardIds.size} unique card_ids not found in cards table`);
+            updatedLogs.push(`   Sample unmatched card_ids: ${unmatchedSample.join(', ')}`);
+
+            const sampleCardIds = [...cardIds].slice(0, 5);
+            updatedLogs.push(`   Sample card.id values in cards table: ${sampleCardIds.join(', ')}`);
           }
         }
 
@@ -1230,10 +1249,26 @@ export default function App() {
       )}
 
       {/* Parse Log */}
-      {parseLog.length > 0 && Object.keys(tables).length === 0 && (
+      {/* Parse Log - always show when there's a log */}
+      {parseLog.length > 0 && (
         <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: parseLog.some(l => l.includes('⚠️')) ? 8 : 0 }}>
+            <span style={{ fontSize: 11, opacity: 0.5, textTransform: 'uppercase' }}>Parse Log</span>
+            {Object.keys(tables).length > 0 && (
+              <span style={{ fontSize: 11, color: '#00F5D4' }}>
+                {Object.keys(tables).length} tables loaded
+              </span>
+            )}
+          </div>
           {parseLog.map((log, i) => (
-            <div key={i} style={{ padding: '4px 0', fontSize: 12, opacity: 0.8 }}>{log}</div>
+            <div key={i} style={{
+              padding: '4px 0',
+              fontSize: 12,
+              color: log.includes('⚠️') ? '#ffaa50' : log.includes('❌') ? '#ff6b6b' : log.includes('✅') || log.includes('🔗') ? '#00F5D4' : '#e0e0e0',
+              opacity: log.includes('⚠️') || log.includes('❌') ? 1 : 0.8
+            }}>
+              {log}
+            </div>
           ))}
         </div>
       )}
