@@ -602,7 +602,7 @@ export default function App() {
 
     // Sort by aggregationType - either sum (value) or count
     const sortKey = aggregationType === 'count' ? 'count' : 'value';
-    return Object.values(breakdown).sort((a, b) => b[sortKey] - a[sortKey]).slice(0, 15);
+    return Object.values(breakdown).sort((a, b) => b[sortKey] - a[sortKey]);
   }, [filteredData, detectedColumns, calculatedColumns, groupByColumn, aggregationType]);
 
   const timeSeriesData = useMemo(() => {
@@ -1267,7 +1267,7 @@ export default function App() {
                     {aggregationType === 'count' ? '# Transactions' : 'Total Spend'} by {groupByColumn || detectedColumns.category || detectedColumns.account || 'Category'}
                     {selectedMonth !== 'all' && ` (${uniqueMonths.find(m => m.key === selectedMonth)?.label || selectedMonth})`}
                   </h3>
-                  <ResponsiveContainer width="100%" height={320}>
+                  <ResponsiveContainer width="100%" height={Math.max(320, categoryBreakdown.length * 28)}>
                     <BarChart data={categoryBreakdown} layout="vertical">
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
                       <XAxis
