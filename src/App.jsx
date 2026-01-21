@@ -19,6 +19,8 @@ export default function App() {
   const [urlInput, setUrlInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [sqlPasteInput, setSqlPasteInput] = useState('');
+  const [showPasteArea, setShowPasteArea] = useState(false);
 
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
 
@@ -369,6 +371,19 @@ export default function App() {
       setIsLoading(false);
     }
   }, [urlInput, processContent]);
+
+  const handlePasteSQL = useCallback(() => {
+    if (!sqlPasteInput.trim()) return;
+
+    setParseLog([]);
+    setCalculatedColumns([]);
+    setLoadError('');
+    setFileName('pasted_sql');
+
+    processContent(sqlPasteInput, 'sql', 'pasted_sql');
+    setSqlPasteInput('');
+    setShowPasteArea(false);
+  }, [sqlPasteInput, processContent]);
 
   const switchTable = useCallback((tableName) => {
     const tableData = tables[tableName];
@@ -835,6 +850,64 @@ export default function App() {
             {loadError && (
               <div style={{ marginTop: 12, padding: 12, background: 'rgba(255, 100, 100, 0.1)', borderRadius: 6, fontSize: 12, color: '#ff6b6b' }}>
                 ⚠️ {loadError}
+              </div>
+            )}
+          </div>
+
+          {/* Divider */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '20px 0' }}>
+            <div style={{ flex: 1, height: 1, background: 'rgba(0, 245, 212, 0.2)' }} />
+            <span style={{ opacity: 0.5, fontSize: 12 }}>or paste SQL directly</span>
+            <div style={{ flex: 1, height: 1, background: 'rgba(0, 245, 212, 0.2)' }} />
+          </div>
+
+          {/* Paste SQL */}
+          <div className="card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: showPasteArea ? 12 : 0 }}>
+              <div style={{ fontSize: 11, opacity: 0.6 }}>
+                Copy SQL from DB Fiddle, SQLFiddle, or anywhere else
+              </div>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setShowPasteArea(!showPasteArea)}
+                style={{ padding: '6px 14px' }}
+              >
+                {showPasteArea ? '✕ Close' : '📋 Paste SQL'}
+              </button>
+            </div>
+
+            {showPasteArea && (
+              <div style={{ marginTop: 12 }}>
+                <textarea
+                  placeholder="Paste your CREATE TABLE and INSERT statements here..."
+                  value={sqlPasteInput}
+                  onChange={(e) => setSqlPasteInput(e.target.value)}
+                  style={{
+                    width: '100%',
+                    minHeight: 200,
+                    background: 'rgba(10, 10, 15, 0.9)',
+                    border: '1px solid rgba(0, 245, 212, 0.2)',
+                    borderRadius: 6,
+                    padding: 12,
+                    color: '#e0e0e0',
+                    fontFamily: 'inherit',
+                    fontSize: 12,
+                    resize: 'vertical'
+                  }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                  <div style={{ fontSize: 10, opacity: 0.4 }}>
+                    Supports: CREATE TABLE, INSERT INTO statements
+                  </div>
+                  <button
+                    className="btn"
+                    onClick={handlePasteSQL}
+                    disabled={!sqlPasteInput.trim()}
+                    style={{ opacity: sqlPasteInput.trim() ? 1 : 0.5 }}
+                  >
+                    🚀 Load SQL
+                  </button>
+                </div>
               </div>
             )}
           </div>
