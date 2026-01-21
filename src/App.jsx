@@ -431,21 +431,29 @@ export default function App() {
 
         // Check for joinable tables (transactions + cards + card_programs)
         if (parsedTables['transactions'] && parsedTables['cards'] && parsedTables['card_programs']) {
-          // Create lookup maps
+          // Create lookup maps - try both string and number keys for flexibility
           const cardsMap = {};
           parsedTables['cards'].forEach(card => {
             cardsMap[card.id] = card;
+            cardsMap[String(card.id)] = card;
           });
           const programsMap = {};
           parsedTables['card_programs'].forEach(prog => {
             programsMap[prog.id] = prog;
+            programsMap[String(prog.id)] = prog;
           });
 
           // Join transactions with cards and card_programs
+          let matchedCards = 0;
+          let matchedPrograms = 0;
           const joinedData = parsedTables['transactions'].map((txn, idx) => {
-            const card = cardsMap[txn.card_id] || {};
+            // Try both the value and string version
+            const card = cardsMap[txn.card_id] || cardsMap[String(txn.card_id)] || {};
             const programId = card.card_program_id;
-            const program = programId ? programsMap[programId] : null;
+            const program = programId ? (programsMap[programId] || programsMap[String(programId)]) : null;
+
+            if (Object.keys(card).length > 0) matchedCards++;
+            if (program) matchedPrograms++;
 
             let programName = 'Unknown Program';
             if (program && (program.display_name || program.name)) {
@@ -463,7 +471,12 @@ export default function App() {
           });
 
           parsedTables['transactions_joined'] = joinedData;
-          updatedLogs.push('🔗 Created joined view: transactions + cards + card_programs');
+          const totalTxns = parsedTables['transactions'].length;
+          updatedLogs.push(`🔗 Joined: ${matchedCards}/${totalTxns} matched cards, ${matchedPrograms}/${totalTxns} matched programs`);
+
+          if (matchedCards < totalTxns * 0.5) {
+            updatedLogs.push(`⚠️ Low card match rate - check if card_id values exist in cards table`);
+          }
         }
 
         // Prefer transactions_joined if it exists, else transactions, else first table
@@ -1457,6 +1470,37 @@ export default function App() {
           {/* Dashboard View */}
           {activeView === 'dashboard' && tables['transactions_joined'] && (
             <div>
+              {/* Summary Stats */}
+              {drilldown.level === 'overview' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 20 }}>
+                  <div className="card" style={{ padding: 16, textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4 }}>TOTAL TRANSACTIONS</div>
+                    <div className="stat-val">{tables['transactions_joined'].length.toLocaleString()}</div>
+                  </div>
+                  <div className="card" style={{ padding: 16, textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4 }}>TOTAL SPEND</div>
+                    <div className="stat-val">${programSummaries.reduce((s, p) => s + p.total_spend, 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                  </div>
+                  <div className="card" style={{ padding: 16, textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4 }}>CARD PROGRAMS</div>
+                    <div className="stat-val">{programSummaries.filter(p => p.card_program_name !== 'Unknown Program').length}</div>
+                  </div>
+                  <div className="card" style={{ padding: 16, textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4 }}>ACTIVE CARDS</div>
+                    <div className="stat-val">{cardSummaries.length}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Warning for unmatched data */}
+              {drilldown.level === 'overview' && programSummaries.some(p => p.card_program_name === 'Unknown Program') && (
+                <div className="card" style={{ padding: 12, marginBottom: 20, background: 'rgba(255,150,50,0.1)', borderColor: 'rgba(255,150,50,0.3)' }}>
+                  <div style={{ fontSize: 12, color: '#ffaa50' }}>
+                    ⚠️ Some transactions couldn't be matched to card programs. This usually means card_id values in transactions don't exist in the cards table.
+                  </div>
+                </div>
+              )}
+
               {/* Breadcrumb */}
               {drilldown.level !== 'overview' && (
                 <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
@@ -1482,7 +1526,7 @@ export default function App() {
                   <div className="card" style={{ padding: 20 }}>
                     <h3 style={{ margin: '0 0 16px', fontSize: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span>💳 Card Programs</span>
-                      <span style={{ fontSize: 11, opacity: 0.5 }}>{programSummaries.length} programs</span>
+                      <span style={{ fontSize: 11, opacity: 0.5 }}>{programSummaries.filter(p => p.card_program_name !== 'Unknown Program').length} programs</span>
                     </h3>
                     <div style={{ maxHeight: 400, overflow: 'auto' }}>
                       <table style={{ width: '100%' }}>
@@ -1515,7 +1559,7 @@ export default function App() {
                           </tr>
                         </thead>
                         <tbody>
-                          {programSummaries.map((prog, idx) => (
+                          {programSummaries.filter(p => p.card_program_name !== 'Unknown Program').map((prog, idx) => (
                             <tr
                               key={prog.card_program_id || idx}
                               onClick={() => setDrilldown({ level: 'program', cardId: null, programId: prog.card_program_id, programName: prog.card_program_name })}
