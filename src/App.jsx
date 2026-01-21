@@ -26,6 +26,7 @@ export default function App() {
   const [aggregationType, setAggregationType] = useState('sum'); // 'sum' or 'count'
   const [topN, setTopN] = useState(10); // default to top 10 for cleaner charts
   const [drilldown, setDrilldown] = useState({ level: 'overview', cardId: null, programId: null, programName: null }); // drill-down state
+  const [dashboardSort, setDashboardSort] = useState({ programs: { key: 'total_spend', dir: 'desc' }, cards: { key: 'total_spend', dir: 'desc' }, drilldown: { key: 'date', dir: 'desc' } });
 
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
 
@@ -51,7 +52,7 @@ export default function App() {
   }, [tables]);
 
   // Compute card summaries from transactions_joined
-  const cardSummaries = useMemo(() => {
+  const cardSummariesRaw = useMemo(() => {
     const joined = tables['transactions_joined'];
     if (!joined) return [];
 
@@ -72,11 +73,24 @@ export default function App() {
       byCard[cardId].total_spend += amt;
     });
 
-    return Object.values(byCard).sort((a, b) => b.total_spend - a.total_spend);
+    return Object.values(byCard);
   }, [tables, amountColumn]);
 
+  // Sorted card summaries
+  const cardSummaries = useMemo(() => {
+    const { key, dir } = dashboardSort.cards;
+    return [...cardSummariesRaw].sort((a, b) => {
+      let aVal = a[key], bVal = b[key];
+      if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+      if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+      if (aVal < bVal) return dir === 'asc' ? -1 : 1;
+      if (aVal > bVal) return dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [cardSummariesRaw, dashboardSort.cards]);
+
   // Compute program summaries from transactions_joined
-  const programSummaries = useMemo(() => {
+  const programSummariesRaw = useMemo(() => {
     const joined = tables['transactions_joined'];
     if (!joined) return [];
 
@@ -109,11 +123,25 @@ export default function App() {
       byProgram[key].card_count = cardsByProgram[key].size;
     });
 
-    return Object.values(byProgram).sort((a, b) => b.total_spend - a.total_spend);
+    return Object.values(byProgram);
   }, [tables, amountColumn]);
 
+  // Sorted program summaries
+  const programSummaries = useMemo(() => {
+    const { key, dir } = dashboardSort.programs;
+    return [...programSummariesRaw].sort((a, b) => {
+      let aVal = a[key], bVal = b[key];
+      if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+      if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+      if (aVal < bVal) return dir === 'asc' ? -1 : 1;
+      if (aVal > bVal) return dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [programSummariesRaw, dashboardSort.programs]);
+
   // Get transactions for drilldown
-  const drilldownData = useMemo(() => {
+  // Get transactions for drilldown (raw, unsorted)
+  const drilldownDataRaw = useMemo(() => {
     const joined = tables['transactions_joined'];
     if (!joined) return [];
 
@@ -125,6 +153,32 @@ export default function App() {
     }
     return [];
   }, [tables, drilldown]);
+
+  // Sorted drilldown data
+  const drilldownData = useMemo(() => {
+    const { key, dir } = dashboardSort.drilldown;
+    return [...drilldownDataRaw].sort((a, b) => {
+      let aVal, bVal;
+      if (key === 'amount') {
+        aVal = amountColumn ? parseFloat(a[amountColumn]) || 0 : 0;
+        bVal = amountColumn ? parseFloat(b[amountColumn]) || 0 : 0;
+      } else if (key === 'date') {
+        aVal = a.user_transaction_time || '';
+        bVal = b.user_transaction_time || '';
+      } else if (key === 'card_id') {
+        aVal = a.card_id;
+        bVal = b.card_id;
+      } else {
+        aVal = a[key];
+        bVal = b[key];
+      }
+      if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+      if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+      if (aVal < bVal) return dir === 'asc' ? -1 : 1;
+      if (aVal > bVal) return dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [drilldownDataRaw, dashboardSort.drilldown, amountColumn]);
 
   const detectColumnType = (values) => {
     const sample = values.filter(v => v !== null && v !== '' && v !== undefined).slice(0, 100);
@@ -1434,10 +1488,30 @@ export default function App() {
                       <table style={{ width: '100%' }}>
                         <thead>
                           <tr>
-                            <th style={{ textAlign: 'left' }}>Program</th>
-                            <th style={{ textAlign: 'right' }}>Cards</th>
-                            <th style={{ textAlign: 'right' }}>Transactions</th>
-                            <th style={{ textAlign: 'right' }}>Total Spend</th>
+                            <th
+                              style={{ textAlign: 'left', cursor: 'pointer' }}
+                              onClick={() => setDashboardSort(s => ({ ...s, programs: { key: 'card_program_name', dir: s.programs.key === 'card_program_name' && s.programs.dir === 'asc' ? 'desc' : 'asc' } }))}
+                            >
+                              Program {dashboardSort.programs.key === 'card_program_name' && (dashboardSort.programs.dir === 'asc' ? '↑' : '↓')}
+                            </th>
+                            <th
+                              style={{ textAlign: 'right', cursor: 'pointer' }}
+                              onClick={() => setDashboardSort(s => ({ ...s, programs: { key: 'card_count', dir: s.programs.key === 'card_count' && s.programs.dir === 'desc' ? 'asc' : 'desc' } }))}
+                            >
+                              Cards {dashboardSort.programs.key === 'card_count' && (dashboardSort.programs.dir === 'asc' ? '↑' : '↓')}
+                            </th>
+                            <th
+                              style={{ textAlign: 'right', cursor: 'pointer' }}
+                              onClick={() => setDashboardSort(s => ({ ...s, programs: { key: 'transaction_count', dir: s.programs.key === 'transaction_count' && s.programs.dir === 'desc' ? 'asc' : 'desc' } }))}
+                            >
+                              Transactions {dashboardSort.programs.key === 'transaction_count' && (dashboardSort.programs.dir === 'asc' ? '↑' : '↓')}
+                            </th>
+                            <th
+                              style={{ textAlign: 'right', cursor: 'pointer' }}
+                              onClick={() => setDashboardSort(s => ({ ...s, programs: { key: 'total_spend', dir: s.programs.key === 'total_spend' && s.programs.dir === 'desc' ? 'asc' : 'desc' } }))}
+                            >
+                              Total Spend {dashboardSort.programs.key === 'total_spend' && (dashboardSort.programs.dir === 'asc' ? '↑' : '↓')}
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1470,10 +1544,30 @@ export default function App() {
                       <table style={{ width: '100%' }}>
                         <thead>
                           <tr>
-                            <th style={{ textAlign: 'left' }}>Card ID</th>
-                            <th style={{ textAlign: 'left' }}>Program</th>
-                            <th style={{ textAlign: 'right' }}>Transactions</th>
-                            <th style={{ textAlign: 'right' }}>Total Spend</th>
+                            <th
+                              style={{ textAlign: 'left', cursor: 'pointer' }}
+                              onClick={() => setDashboardSort(s => ({ ...s, cards: { key: 'card_id', dir: s.cards.key === 'card_id' && s.cards.dir === 'asc' ? 'desc' : 'asc' } }))}
+                            >
+                              Card ID {dashboardSort.cards.key === 'card_id' && (dashboardSort.cards.dir === 'asc' ? '↑' : '↓')}
+                            </th>
+                            <th
+                              style={{ textAlign: 'left', cursor: 'pointer' }}
+                              onClick={() => setDashboardSort(s => ({ ...s, cards: { key: 'card_program_name', dir: s.cards.key === 'card_program_name' && s.cards.dir === 'asc' ? 'desc' : 'asc' } }))}
+                            >
+                              Program {dashboardSort.cards.key === 'card_program_name' && (dashboardSort.cards.dir === 'asc' ? '↑' : '↓')}
+                            </th>
+                            <th
+                              style={{ textAlign: 'right', cursor: 'pointer' }}
+                              onClick={() => setDashboardSort(s => ({ ...s, cards: { key: 'transaction_count', dir: s.cards.key === 'transaction_count' && s.cards.dir === 'desc' ? 'asc' : 'desc' } }))}
+                            >
+                              Transactions {dashboardSort.cards.key === 'transaction_count' && (dashboardSort.cards.dir === 'asc' ? '↑' : '↓')}
+                            </th>
+                            <th
+                              style={{ textAlign: 'right', cursor: 'pointer' }}
+                              onClick={() => setDashboardSort(s => ({ ...s, cards: { key: 'total_spend', dir: s.cards.key === 'total_spend' && s.cards.dir === 'desc' ? 'asc' : 'desc' } }))}
+                            >
+                              Total Spend {dashboardSort.cards.key === 'total_spend' && (dashboardSort.cards.dir === 'asc' ? '↑' : '↓')}
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1519,10 +1613,30 @@ export default function App() {
                     <table style={{ width: '100%' }}>
                       <thead>
                         <tr>
-                          <th style={{ textAlign: 'left' }}>Date</th>
-                          <th style={{ textAlign: 'left' }}>Card ID</th>
-                          <th style={{ textAlign: 'left' }}>Program</th>
-                          <th style={{ textAlign: 'right' }}>Amount</th>
+                          <th
+                            style={{ textAlign: 'left', cursor: 'pointer' }}
+                            onClick={() => setDashboardSort(s => ({ ...s, drilldown: { key: 'date', dir: s.drilldown.key === 'date' && s.drilldown.dir === 'desc' ? 'asc' : 'desc' } }))}
+                          >
+                            Date {dashboardSort.drilldown.key === 'date' && (dashboardSort.drilldown.dir === 'asc' ? '↑' : '↓')}
+                          </th>
+                          <th
+                            style={{ textAlign: 'left', cursor: 'pointer' }}
+                            onClick={() => setDashboardSort(s => ({ ...s, drilldown: { key: 'card_id', dir: s.drilldown.key === 'card_id' && s.drilldown.dir === 'asc' ? 'desc' : 'asc' } }))}
+                          >
+                            Card ID {dashboardSort.drilldown.key === 'card_id' && (dashboardSort.drilldown.dir === 'asc' ? '↑' : '↓')}
+                          </th>
+                          <th
+                            style={{ textAlign: 'left', cursor: 'pointer' }}
+                            onClick={() => setDashboardSort(s => ({ ...s, drilldown: { key: 'card_program_name', dir: s.drilldown.key === 'card_program_name' && s.drilldown.dir === 'asc' ? 'desc' : 'asc' } }))}
+                          >
+                            Program {dashboardSort.drilldown.key === 'card_program_name' && (dashboardSort.drilldown.dir === 'asc' ? '↑' : '↓')}
+                          </th>
+                          <th
+                            style={{ textAlign: 'right', cursor: 'pointer' }}
+                            onClick={() => setDashboardSort(s => ({ ...s, drilldown: { key: 'amount', dir: s.drilldown.key === 'amount' && s.drilldown.dir === 'desc' ? 'asc' : 'desc' } }))}
+                          >
+                            Amount {dashboardSort.drilldown.key === 'amount' && (dashboardSort.drilldown.dir === 'asc' ? '↑' : '↓')}
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
