@@ -265,24 +265,68 @@ export default function App() {
   const processContent = useCallback((content, type, name) => {
     if (type === 'sql') {
       const { tables: parsedTables, logs } = parseSQLFile(content);
-      
-      setParseLog(logs);
-      
+
+      const updatedLogs = [...logs];
+
       if (Object.keys(parsedTables).length > 0) {
-        const firstTable = Object.keys(parsedTables)[0];
-        const tableData = parsedTables[firstTable];
+        // Process each table's data types
+        Object.keys(parsedTables).forEach(tableName => {
+          const tableData = parsedTables[tableName];
+          const cols = Object.keys(tableData[0] || {}).filter(k => k !== '_id');
+          const { processedData } = processTableData(tableData, cols);
+          parsedTables[tableName] = processedData;
+        });
+
+        // Check for joinable tables (transactions + cards + card_programs)
+        if (parsedTables['transactions'] && parsedTables['cards'] && parsedTables['card_programs']) {
+          // Create lookup maps
+          const cardsMap = {};
+          parsedTables['cards'].forEach(card => {
+            cardsMap[card.id] = card;
+          });
+          const programsMap = {};
+          parsedTables['card_programs'].forEach(prog => {
+            programsMap[prog.id] = prog;
+          });
+
+          // Join transactions with cards and card_programs
+          const joinedData = parsedTables['transactions'].map((txn, idx) => {
+            const card = cardsMap[txn.card_id] || {};
+            const program = programsMap[card.card_program_id] || {};
+            return {
+              _id: idx,
+              ...txn,
+              card_program_id: card.card_program_id,
+              card_program_name: program.display_name || program.name || `Program ${card.card_program_id}`
+            };
+          });
+
+          parsedTables['transactions_joined'] = joinedData;
+          updatedLogs.push('🔗 Created joined view: transactions + cards + card_programs');
+        }
+
+        // Prefer transactions_joined if it exists, else transactions, else first table
+        let defaultTable = Object.keys(parsedTables)[0];
+        if (parsedTables['transactions_joined']) {
+          defaultTable = 'transactions_joined';
+        } else if (parsedTables['transactions']) {
+          defaultTable = 'transactions';
+        }
+
+        const tableData = parsedTables[defaultTable];
         const cols = Object.keys(tableData[0] || {}).filter(k => k !== '_id');
-        
-        const { processedData, types } = processTableData(tableData, cols);
-        parsedTables[firstTable] = processedData;
-        
+
+        const { types } = processTableData(tableData, cols);
+
         setTables(parsedTables);
-        setActiveTable(firstTable);
+        setActiveTable(defaultTable);
         setColumns(cols);
         setColumnTypes(types);
         setFilters({});
         setSelectedCategory('all');
       }
+
+      setParseLog(updatedLogs);
     } else {
       // Parse as CSV
       Papa.parse(content, {
@@ -392,14 +436,14 @@ export default function App() {
   const switchTable = useCallback((tableName) => {
     const tableData = tables[tableName];
     if (!tableData || tableData.length === 0) return;
-    
+
     const cols = Object.keys(tableData[0] || {}).filter(k => k !== '_id');
     const types = {};
     cols.forEach(col => {
       const values = tableData.map(row => row[col]);
       types[col] = detectColumnType(values);
     });
-    
+
     setActiveTable(tableName);
     setColumns(cols);
     setColumnTypes(types);
