@@ -25,8 +25,83 @@ export default function App() {
   const [groupByColumn, setGroupByColumn] = useState('');
   const [aggregationType, setAggregationType] = useState('sum'); // 'sum' or 'count'
   const [topN, setTopN] = useState(10); // default to top 10 for cleaner charts
+  const [drilldown, setDrilldown] = useState({ level: 'overview', cardId: null, programId: null, programName: null }); // drill-down state
 
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
+
+  // Compute card summaries from transactions_joined
+  const cardSummaries = useMemo(() => {
+    const joined = tables['transactions_joined'];
+    if (!joined) return [];
+
+    const byCard = {};
+    joined.forEach(txn => {
+      const cardId = txn.card_id;
+      if (!byCard[cardId]) {
+        byCard[cardId] = {
+          card_id: cardId,
+          card_program_id: txn.card_program_id,
+          card_program_name: txn.card_program_name,
+          transaction_count: 0,
+          total_spend: 0
+        };
+      }
+      byCard[cardId].transaction_count++;
+      byCard[cardId].total_spend += parseFloat(txn.amount) || 0;
+    });
+
+    return Object.values(byCard).sort((a, b) => b.total_spend - a.total_spend);
+  }, [tables]);
+
+  // Compute program summaries from transactions_joined
+  const programSummaries = useMemo(() => {
+    const joined = tables['transactions_joined'];
+    if (!joined) return [];
+
+    const byProgram = {};
+    const cardsByProgram = {};
+
+    joined.forEach(txn => {
+      const progId = txn.card_program_id;
+      const progName = txn.card_program_name;
+      const key = progId || 'unknown';
+
+      if (!byProgram[key]) {
+        byProgram[key] = {
+          card_program_id: progId,
+          card_program_name: progName,
+          transaction_count: 0,
+          total_spend: 0,
+          card_count: 0
+        };
+        cardsByProgram[key] = new Set();
+      }
+      byProgram[key].transaction_count++;
+      byProgram[key].total_spend += parseFloat(txn.amount) || 0;
+      cardsByProgram[key].add(txn.card_id);
+    });
+
+    // Set card counts
+    Object.keys(byProgram).forEach(key => {
+      byProgram[key].card_count = cardsByProgram[key].size;
+    });
+
+    return Object.values(byProgram).sort((a, b) => b.total_spend - a.total_spend);
+  }, [tables]);
+
+  // Get transactions for drilldown
+  const drilldownData = useMemo(() => {
+    const joined = tables['transactions_joined'];
+    if (!joined) return [];
+
+    if (drilldown.level === 'card' && drilldown.cardId !== null) {
+      return joined.filter(txn => txn.card_id === drilldown.cardId);
+    }
+    if (drilldown.level === 'program' && drilldown.programId !== null) {
+      return joined.filter(txn => txn.card_program_id === drilldown.programId);
+    }
+    return [];
+  }, [tables, drilldown]);
 
   const detectColumnType = (values) => {
     const sample = values.filter(v => v !== null && v !== '' && v !== undefined).slice(0, 100);
@@ -333,6 +408,12 @@ export default function App() {
         setColumnTypes(types);
         setFilters({});
         setSelectedCategory('all');
+
+        // Default to dashboard view if we have joined transaction data
+        if (parsedTables['transactions_joined']) {
+          setActiveView('dashboard');
+          setDrilldown({ level: 'overview', cardId: null, programId: null, programName: null });
+        }
       }
 
       setParseLog(updatedLogs);
@@ -1223,6 +1304,15 @@ export default function App() {
                 )}
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
+                {tables['transactions_joined'] && (
+                  <button
+                    className={`btn btn-ghost ${activeView === 'dashboard' ? 'active' : ''}`}
+                    onClick={() => { setActiveView('dashboard'); setDrilldown({ level: 'overview', cardId: null, programId: null, programName: null }); }}
+                    style={{ padding: '6px 14px' }}
+                  >
+                    🏠 Dashboard
+                  </button>
+                )}
                 <button
                   className={`btn btn-ghost ${activeView === 'table' ? 'active' : ''}`}
                   onClick={() => setActiveView('table')}
@@ -1286,6 +1376,150 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Dashboard View */}
+          {activeView === 'dashboard' && tables['transactions_joined'] && (
+            <div>
+              {/* Breadcrumb */}
+              {drilldown.level !== 'overview' && (
+                <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => setDrilldown({ level: 'overview', cardId: null, programId: null, programName: null })}
+                    style={{ padding: '4px 10px', fontSize: 11 }}
+                  >
+                    ← Back to Overview
+                  </button>
+                  <span style={{ opacity: 0.5 }}>|</span>
+                  <span style={{ color: '#00F5D4' }}>
+                    {drilldown.level === 'card' && `Card #${drilldown.cardId}`}
+                    {drilldown.level === 'program' && drilldown.programName}
+                  </span>
+                </div>
+              )}
+
+              {/* Overview - Card Programs & Cards side by side */}
+              {drilldown.level === 'overview' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 20 }}>
+                  {/* Card Programs */}
+                  <div className="card" style={{ padding: 20 }}>
+                    <h3 style={{ margin: '0 0 16px', fontSize: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>💳 Card Programs</span>
+                      <span style={{ fontSize: 11, opacity: 0.5 }}>{programSummaries.length} programs</span>
+                    </h3>
+                    <div style={{ maxHeight: 400, overflow: 'auto' }}>
+                      <table style={{ width: '100%' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left' }}>Program</th>
+                            <th style={{ textAlign: 'right' }}>Cards</th>
+                            <th style={{ textAlign: 'right' }}>Transactions</th>
+                            <th style={{ textAlign: 'right' }}>Total Spend</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {programSummaries.map((prog, idx) => (
+                            <tr
+                              key={prog.card_program_id || idx}
+                              onClick={() => setDrilldown({ level: 'program', cardId: null, programId: prog.card_program_id, programName: prog.card_program_name })}
+                              style={{ cursor: 'pointer' }}
+                            >
+                              <td style={{ color: COLORS[idx % COLORS.length] }}>{prog.card_program_name}</td>
+                              <td style={{ textAlign: 'right', opacity: 0.7 }}>{prog.card_count}</td>
+                              <td style={{ textAlign: 'right', opacity: 0.7 }}>{prog.transaction_count.toLocaleString()}</td>
+                              <td style={{ textAlign: 'right', color: '#00F5D4', fontVariantNumeric: 'tabular-nums' }}>
+                                ${prog.total_spend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Cards */}
+                  <div className="card" style={{ padding: 20 }}>
+                    <h3 style={{ margin: '0 0 16px', fontSize: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>🪪 Cards</span>
+                      <span style={{ fontSize: 11, opacity: 0.5 }}>{cardSummaries.length} cards</span>
+                    </h3>
+                    <div style={{ maxHeight: 400, overflow: 'auto' }}>
+                      <table style={{ width: '100%' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left' }}>Card ID</th>
+                            <th style={{ textAlign: 'left' }}>Program</th>
+                            <th style={{ textAlign: 'right' }}>Transactions</th>
+                            <th style={{ textAlign: 'right' }}>Total Spend</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {cardSummaries.slice(0, 100).map((card, idx) => (
+                            <tr
+                              key={card.card_id}
+                              onClick={() => setDrilldown({ level: 'card', cardId: card.card_id, programId: null, programName: null })}
+                              style={{ cursor: 'pointer' }}
+                            >
+                              <td>#{card.card_id}</td>
+                              <td style={{ opacity: 0.7 }}>{card.card_program_name}</td>
+                              <td style={{ textAlign: 'right', opacity: 0.7 }}>{card.transaction_count}</td>
+                              <td style={{ textAlign: 'right', color: '#00F5D4', fontVariantNumeric: 'tabular-nums' }}>
+                                ${card.total_spend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {cardSummaries.length > 100 && (
+                        <div style={{ padding: 12, textAlign: 'center', opacity: 0.5, fontSize: 11 }}>
+                          Showing top 100 of {cardSummaries.length} cards
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Drilldown - Show transactions for selected card or program */}
+              {(drilldown.level === 'card' || drilldown.level === 'program') && (
+                <div className="card" style={{ padding: 20 }}>
+                  <h3 style={{ margin: '0 0 16px', fontSize: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>
+                      {drilldown.level === 'card' ? `Transactions for Card #${drilldown.cardId}` : `Transactions for ${drilldown.programName}`}
+                    </span>
+                    <span style={{ fontSize: 11, opacity: 0.5 }}>
+                      {drilldownData.length} transactions |
+                      Total: ${drilldownData.reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </h3>
+                  <div style={{ maxHeight: 500, overflow: 'auto' }}>
+                    <table style={{ width: '100%' }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: 'left' }}>Date</th>
+                          <th style={{ textAlign: 'left' }}>Card ID</th>
+                          <th style={{ textAlign: 'left' }}>Program</th>
+                          <th style={{ textAlign: 'right' }}>Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {drilldownData.map((txn, idx) => (
+                          <tr key={txn._id || idx}>
+                            <td>{txn.user_transaction_time}</td>
+                            <td>#{txn.card_id}</td>
+                            <td style={{ opacity: 0.7 }}>{txn.card_program_name}</td>
+                            <td style={{ textAlign: 'right', color: '#00F5D4', fontVariantNumeric: 'tabular-nums' }}>
+                              ${(parseFloat(txn.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Table View */}
           {activeView === 'table' && (
