@@ -21,6 +21,9 @@ export default function App() {
   const [loadError, setLoadError] = useState('');
   const [sqlPasteInput, setSqlPasteInput] = useState('');
   const [showPasteArea, setShowPasteArea] = useState(false);
+  const [selectedMonth, setSelectedMonth] = useState('all');
+  const [groupByColumn, setGroupByColumn] = useState('');
+  const [aggregationType, setAggregationType] = useState('sum'); // 'sum' or 'count'
 
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
 
@@ -413,6 +416,43 @@ export default function App() {
     return [...new Set(data.map(row => row[catCol]))].filter(Boolean).sort();
   }, [data, detectedColumns]);
 
+  // Extract unique months from date column
+  const uniqueMonths = useMemo(() => {
+    const dateCol = detectedColumns.date;
+    if (!dateCol) return [];
+
+    const months = new Set();
+    data.forEach(row => {
+      const dateVal = row[dateCol];
+      if (!dateVal) return;
+
+      let date;
+      if (typeof dateVal === 'string') {
+        const isoMatch = dateVal.match(/\d{4}-\d{2}-\d{2}/);
+        if (isoMatch) {
+          date = new Date(isoMatch[0]);
+        } else {
+          date = new Date(dateVal);
+        }
+      }
+
+      if (date && !isNaN(date.getTime())) {
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        const monthLabel = date.toLocaleString('default', { month: 'long', year: 'numeric' });
+        months.add(JSON.stringify({ key: monthKey, label: monthLabel }));
+      }
+    });
+
+    return [...months].map(m => JSON.parse(m)).sort((a, b) => a.key.localeCompare(b.key));
+  }, [data, detectedColumns]);
+
+  // Get groupable columns (text/category columns)
+  const groupableColumns = useMemo(() => {
+    return columns.filter(col =>
+      columnTypes[col] === 'category' || columnTypes[col] === 'text'
+    );
+  }, [columns, columnTypes]);
+
   const addCalculatedColumn = useCallback(() => {
     const qtyCol = detectedColumns.quantity;
     const priceCol = detectedColumns.amount;
@@ -433,31 +473,56 @@ export default function App() {
 
   const filteredData = useMemo(() => {
     let result = [...data];
-    
+
     const catCol = detectedColumns.category || detectedColumns.account;
     if (selectedCategory !== 'all' && catCol) {
       result = result.filter(row => row[catCol] === selectedCategory);
     }
-    
+
+    // Filter by month
+    const dateCol = detectedColumns.date;
+    if (selectedMonth !== 'all' && dateCol) {
+      result = result.filter(row => {
+        const dateVal = row[dateCol];
+        if (!dateVal) return false;
+
+        let date;
+        if (typeof dateVal === 'string') {
+          const isoMatch = dateVal.match(/\d{4}-\d{2}-\d{2}/);
+          if (isoMatch) {
+            date = new Date(isoMatch[0]);
+          } else {
+            date = new Date(dateVal);
+          }
+        }
+
+        if (date && !isNaN(date.getTime())) {
+          const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+          return monthKey === selectedMonth;
+        }
+        return false;
+      });
+    }
+
     Object.entries(filters).forEach(([col, value]) => {
       if (value) {
-        result = result.filter(row => 
+        result = result.filter(row =>
           String(row[col] || '').toLowerCase().includes(value.toLowerCase())
         );
       }
     });
-    
+
     if (sortConfig.key) {
       result.sort((a, b) => {
         let aVal = a[sortConfig.key];
         let bVal = b[sortConfig.key];
-        
+
         const calcCol = calculatedColumns.find(c => c.name === sortConfig.key);
         if (calcCol) {
           aVal = calcCol.calculate(a);
           bVal = calcCol.calculate(b);
         }
-        
+
         if (aVal === null || aVal === undefined) return 1;
         if (bVal === null || bVal === undefined) return -1;
         if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -465,9 +530,9 @@ export default function App() {
         return 0;
       });
     }
-    
+
     return result;
-  }, [data, filters, sortConfig, selectedCategory, detectedColumns, calculatedColumns]);
+  }, [data, filters, sortConfig, selectedCategory, selectedMonth, detectedColumns, calculatedColumns]);
 
   const stats = useMemo(() => {
     if (filteredData.length === 0) return null;
@@ -504,37 +569,41 @@ export default function App() {
   }, [filteredData, detectedColumns, calculatedColumns]);
 
   const categoryBreakdown = useMemo(() => {
-    const catCol = detectedColumns.category || detectedColumns.account;
+    // Use selected groupByColumn or fall back to detected category/account
+    const catCol = groupByColumn || detectedColumns.category || detectedColumns.account;
     const amountCol = detectedColumns.amount;
     const qtyCol = detectedColumns.quantity;
-    
+
     if (!catCol) return [];
-    
+
     const breakdown = {};
-    data.forEach(row => {
+    // Use filteredData instead of data to respect month/category filters
+    filteredData.forEach(row => {
       const cat = row[catCol];
       if (!cat) return;
-      
+
       if (!breakdown[cat]) {
-        breakdown[cat] = { name: String(cat).slice(0, 25), value: 0, qty: 0, count: 0 };
+        breakdown[cat] = { name: String(cat).slice(0, 25), value: 0, qty: 0, count: 0, fullName: String(cat) };
       }
-      
+
       breakdown[cat].count++;
-      
+
       if (amountCol && qtyCol && calculatedColumns.find(c => c.name === 'ext_total')) {
         const calc = calculatedColumns.find(c => c.name === 'ext_total');
         breakdown[cat].value += calc.calculate(row);
       } else if (amountCol) {
         breakdown[cat].value += parseFloat(row[amountCol]) || 0;
       }
-      
+
       if (qtyCol) {
         breakdown[cat].qty += parseFloat(row[qtyCol]) || 0;
       }
     });
-    
-    return Object.values(breakdown).sort((a, b) => b.value - a.value).slice(0, 10);
-  }, [data, detectedColumns, calculatedColumns]);
+
+    // Sort by aggregationType - either sum (value) or count
+    const sortKey = aggregationType === 'count' ? 'count' : 'value';
+    return Object.values(breakdown).sort((a, b) => b[sortKey] - a[sortKey]).slice(0, 15);
+  }, [filteredData, detectedColumns, calculatedColumns, groupByColumn, aggregationType]);
 
   const timeSeriesData = useMemo(() => {
     const dateCol = detectedColumns.date;
@@ -1039,8 +1108,8 @@ export default function App() {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 {uniqueCategories.length > 0 && (
-                  <select 
-                    value={selectedCategory} 
+                  <select
+                    value={selectedCategory}
                     onChange={(e) => setSelectedCategory(e.target.value)}
                     style={{ minWidth: 180 }}
                   >
@@ -1050,31 +1119,43 @@ export default function App() {
                     ))}
                   </select>
                 )}
-                {columns.slice(0, 4).map(col => (
+                {uniqueMonths.length > 0 && (
+                  <select
+                    value={selectedMonth}
+                    onChange={(e) => setSelectedMonth(e.target.value)}
+                    style={{ minWidth: 150 }}
+                  >
+                    <option value="all">All Months</option>
+                    {uniqueMonths.map(m => (
+                      <option key={m.key} value={m.key}>{m.label}</option>
+                    ))}
+                  </select>
+                )}
+                {columns.slice(0, 3).map(col => (
                   <input
                     key={col}
                     type="text"
                     placeholder={`${col}...`}
                     value={filters[col] || ''}
                     onChange={(e) => setFilters(prev => ({ ...prev, [col]: e.target.value }))}
-                    style={{ width: 120 }}
+                    style={{ width: 100 }}
                   />
                 ))}
-                {Object.values(filters).some(v => v) && (
-                  <button className="btn btn-ghost" onClick={() => setFilters({})} style={{ padding: '6px 12px' }}>
-                    Clear
+                {(Object.values(filters).some(v => v) || selectedMonth !== 'all' || selectedCategory !== 'all') && (
+                  <button className="btn btn-ghost" onClick={() => { setFilters({}); setSelectedMonth('all'); setSelectedCategory('all'); }} style={{ padding: '6px 12px' }}>
+                    Clear All
                   </button>
                 )}
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button 
+                <button
                   className={`btn btn-ghost ${activeView === 'table' ? 'active' : ''}`}
                   onClick={() => setActiveView('table')}
                   style={{ padding: '6px 14px' }}
                 >
                   📋 Table
                 </button>
-                <button 
+                <button
                   className={`btn btn-ghost ${activeView === 'charts' ? 'active' : ''}`}
                   onClick={() => setActiveView('charts')}
                   style={{ padding: '6px 14px' }}
@@ -1083,6 +1164,40 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {/* Chart Controls - only show when in chart view */}
+            {activeView === 'charts' && (
+              <div style={{ display: 'flex', gap: 12, marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.1)', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 11, opacity: 0.6 }}>Group by:</span>
+                <select
+                  value={groupByColumn}
+                  onChange={(e) => setGroupByColumn(e.target.value)}
+                  style={{ minWidth: 140 }}
+                >
+                  <option value="">Auto-detect</option>
+                  {groupableColumns.map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+                <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 8 }}>Show:</span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    className={`btn btn-ghost ${aggregationType === 'sum' ? 'active' : ''}`}
+                    onClick={() => setAggregationType('sum')}
+                    style={{ padding: '4px 10px', fontSize: 11 }}
+                  >
+                    💰 Total Spend
+                  </button>
+                  <button
+                    className={`btn btn-ghost ${aggregationType === 'count' ? 'active' : ''}`}
+                    onClick={() => setAggregationType('count')}
+                    style={{ padding: '4px 10px', fontSize: 11 }}
+                  >
+                    🔢 # Transactions
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Table View */}
@@ -1149,18 +1264,31 @@ export default function App() {
               {categoryBreakdown.length > 0 && (
                 <div className="card" style={{ padding: 20 }}>
                   <h3 style={{ margin: '0 0 16px', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.7 }}>
-                    By {detectedColumns.category || detectedColumns.account || 'Category'}
+                    {aggregationType === 'count' ? '# Transactions' : 'Total Spend'} by {groupByColumn || detectedColumns.category || detectedColumns.account || 'Category'}
+                    {selectedMonth !== 'all' && ` (${uniqueMonths.find(m => m.key === selectedMonth)?.label || selectedMonth})`}
                   </h3>
-                  <ResponsiveContainer width="100%" height={280}>
+                  <ResponsiveContainer width="100%" height={320}>
                     <BarChart data={categoryBreakdown} layout="vertical">
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
-                      <XAxis type="number" stroke="#555" tickFormatter={(v) => formatNumber(v)} tick={{ fontSize: 10 }} />
-                      <YAxis type="category" dataKey="name" stroke="#555" width={90} tick={{ fontSize: 10 }} />
-                      <Tooltip 
-                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
-                        formatter={(value) => [formatNumber(value), 'Total']}
+                      <XAxis
+                        type="number"
+                        stroke="#555"
+                        tickFormatter={(v) => aggregationType === 'count' ? v.toLocaleString() : formatNumber(v)}
+                        tick={{ fontSize: 10 }}
                       />
-                      <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                      <YAxis type="category" dataKey="name" stroke="#555" width={100} tick={{ fontSize: 10 }} />
+                      <Tooltip
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
+                        formatter={(value, name, props) => {
+                          const item = props.payload;
+                          if (aggregationType === 'count') {
+                            return [`${value.toLocaleString()} transactions`, item.fullName || item.name];
+                          }
+                          return [formatNumber(value), item.fullName || item.name];
+                        }}
+                        labelFormatter={() => ''}
+                      />
+                      <Bar dataKey={aggregationType === 'count' ? 'count' : 'value'} radius={[0, 4, 4, 0]}>
                         {categoryBreakdown.map((_, index) => (
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                         ))}
@@ -1173,7 +1301,7 @@ export default function App() {
               {categoryBreakdown.length > 0 && (
                 <div className="card" style={{ padding: 20 }}>
                   <h3 style={{ margin: '0 0 16px', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.7 }}>
-                    Distribution
+                    Distribution ({aggregationType === 'count' ? 'by count' : 'by spend'})
                   </h3>
                   <ResponsiveContainer width="100%" height={220}>
                     <PieChart>
@@ -1184,15 +1312,15 @@ export default function App() {
                         innerRadius={45}
                         outerRadius={80}
                         paddingAngle={2}
-                        dataKey="value"
+                        dataKey={aggregationType === 'count' ? 'count' : 'value'}
                       >
                         {categoryBreakdown.slice(0, 8).map((_, index) => (
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                         ))}
                       </Pie>
-                      <Tooltip 
+                      <Tooltip
                         contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(0, 245, 212, 0.3)', borderRadius: 6, fontSize: 11 }}
-                        formatter={(value) => [formatNumber(value), 'Value']}
+                        formatter={(value) => aggregationType === 'count' ? [`${value.toLocaleString()} transactions`, ''] : [formatNumber(value), '']}
                       />
                     </PieChart>
                   </ResponsiveContainer>
