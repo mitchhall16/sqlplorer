@@ -292,12 +292,21 @@ export default function App() {
           // Join transactions with cards and card_programs
           const joinedData = parsedTables['transactions'].map((txn, idx) => {
             const card = cardsMap[txn.card_id] || {};
-            const program = programsMap[card.card_program_id] || {};
+            const programId = card.card_program_id;
+            const program = programId ? programsMap[programId] : null;
+
+            let programName = 'Unknown Program';
+            if (program && (program.display_name || program.name)) {
+              programName = program.display_name || program.name;
+            } else if (programId !== undefined && programId !== null) {
+              programName = `Program #${programId}`;
+            }
+
             return {
               _id: idx,
               ...txn,
-              card_program_id: card.card_program_id,
-              card_program_name: program.display_name || program.name || `Program ${card.card_program_id}`
+              card_program_id: programId,
+              card_program_name: programName
             };
           });
 
