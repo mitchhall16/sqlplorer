@@ -29,6 +29,12 @@ export default function App() {
   const [showParseLog, setShowParseLog] = useState(true);
   const [dashboardSort, setDashboardSort] = useState({ programs: { key: 'total_spend', dir: 'desc' }, cards: { key: 'total_spend', dir: 'desc' }, drilldown: { key: 'date', dir: 'desc' } });
 
+  // AI Chat state
+  const [aiQuestion, setAiQuestion] = useState('');
+  const [aiAnswer, setAiAnswer] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiHistory, setAiHistory] = useState([]);
+
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
 
   // Find amount column in joined data
@@ -955,6 +961,147 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Helper: group by a column and sum another column, return top N
+  const groupAndSum = (rows, groupCol, sumCol, topN = 10) => {
+    const groups = {};
+    rows.forEach(row => {
+      const key = row[groupCol];
+      if (key === null || key === undefined || key === '') return;
+      const val = parseFloat(row[sumCol]);
+      if (isNaN(val)) return;
+      groups[key] = (groups[key] || 0) + val;
+    });
+    return Object.entries(groups)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topN)
+      .map(([key, sum]) => ({ key, sum: Math.round(sum * 100) / 100 }));
+  };
+
+  // Helper: group by a column and count occurrences, return top N
+  const groupAndCount = (rows, groupCol, topN = 10) => {
+    const groups = {};
+    rows.forEach(row => {
+      const key = row[groupCol];
+      if (key === null || key === undefined || key === '') return;
+      groups[key] = (groups[key] || 0) + 1;
+    });
+    return Object.entries(groups)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topN)
+      .map(([key, count]) => ({ key, count }));
+  };
+
+  // Compute aggregations from full dataset for AI
+  const computeAggregations = (rows, cols) => {
+    if (!rows.length) return {};
+
+    const aggs = {
+      totalRows: rows.length,
+      columnStats: {},
+      groupedStats: {}
+    };
+
+    // Detect common column patterns
+    const colsLower = cols.map(c => c.toLowerCase());
+    const hasCardId = cols.find(c => c.toLowerCase().includes('card_id') || c.toLowerCase() === 'card_id');
+    const hasProgramId = cols.find(c => c.toLowerCase().includes('program_id') || c.toLowerCase() === 'card_program_id');
+    const hasAmountCol = cols.find(c =>
+      c.toLowerCase().includes('amount') ||
+      c.toLowerCase().includes('spend') ||
+      c.toLowerCase().includes('total')
+    );
+    const hasMerchantCol = cols.find(c => c.toLowerCase().includes('merchant'));
+
+    cols.forEach(col => {
+      const values = rows.map(r => r[col]).filter(v => v !== null && v !== undefined && v !== '');
+      const uniqueValues = [...new Set(values)];
+
+      // For categorical columns (< 100 unique values), count occurrences
+      if (uniqueValues.length > 0 && uniqueValues.length <= 100) {
+        const counts = {};
+        values.forEach(v => {
+          const key = String(v).slice(0, 50); // Truncate long values
+          counts[key] = (counts[key] || 0) + 1;
+        });
+        // Sort by count descending, take top 20
+        const sorted = Object.entries(counts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 20);
+        aggs.columnStats[col] = {
+          uniqueCount: uniqueValues.length,
+          topValues: sorted
+        };
+      }
+
+      // For numeric columns, compute sum/avg/min/max
+      const numericVals = values.map(v => parseFloat(v)).filter(v => !isNaN(v));
+      if (numericVals.length > values.length * 0.5) {
+        aggs.columnStats[col] = {
+          ...aggs.columnStats[col],
+          sum: numericVals.reduce((a, b) => a + b, 0),
+          avg: numericVals.reduce((a, b) => a + b, 0) / numericVals.length,
+          min: Math.min(...numericVals),
+          max: Math.max(...numericVals)
+        };
+      }
+    });
+
+    // Compute grouped aggregations for common patterns
+    if (hasCardId && hasAmountCol) {
+      aggs.groupedStats.topCardsBySpend = groupAndSum(rows, hasCardId, hasAmountCol, 10);
+    }
+    if (hasProgramId && hasAmountCol) {
+      aggs.groupedStats.topProgramsBySpend = groupAndSum(rows, hasProgramId, hasAmountCol, 10);
+    }
+    if (hasCardId) {
+      aggs.groupedStats.topCardsByCount = groupAndCount(rows, hasCardId, 10);
+    }
+    if (hasProgramId) {
+      aggs.groupedStats.topProgramsByCount = groupAndCount(rows, hasProgramId, 10);
+    }
+    if (hasMerchantCol && hasAmountCol) {
+      aggs.groupedStats.topMerchantsBySpend = groupAndSum(rows, hasMerchantCol, hasAmountCol, 10);
+    }
+    if (hasMerchantCol) {
+      aggs.groupedStats.topMerchantsByCount = groupAndCount(rows, hasMerchantCol, 10);
+    }
+
+    return aggs;
+  };
+
+  const askAI = async () => {
+    if (!aiQuestion.trim() || !data.length) return;
+
+    setAiLoading(true);
+    setAiAnswer('');
+
+    try {
+      const res = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: aiQuestion,
+          schema: columns,
+          sampleData: data.slice(0, 50),
+          rowCount: data.length,
+          // Pre-compute aggregations from FULL dataset
+          aggregations: computeAggregations(data, columns)
+        })
+      });
+
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Failed to get answer');
+
+      setAiAnswer(result.answer);
+      setAiHistory(prev => [...prev, { question: aiQuestion, answer: result.answer }]);
+      setAiQuestion('');
+    } catch (e) {
+      setAiAnswer(`Error: ${e.message}`);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   return (
     <div style={{
       minHeight: '100vh',
@@ -1477,6 +1624,13 @@ export default function App() {
                 >
                   📊 Charts
                 </button>
+                <button
+                  className={`btn btn-ghost ${activeView === 'ask' ? 'active' : ''}`}
+                  onClick={() => setActiveView('ask')}
+                  style={{ padding: '6px 14px' }}
+                >
+                  🤖 Ask AI
+                </button>
               </div>
             </div>
 
@@ -1953,6 +2107,96 @@ export default function App() {
               {categoryBreakdown.length === 0 && timeSeriesData.data.length <= 1 && (
                 <div className="card" style={{ padding: 32, textAlign: 'center', opacity: 0.5, gridColumn: '1 / -1' }}>
                   Charts need numeric columns (amounts, costs, quantities) or date columns to display.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Ask AI View */}
+          {activeView === 'ask' && (
+            <div className="card" style={{ padding: 24 }}>
+              <h3 style={{ marginBottom: 16, color: '#00F5D4' }}>🤖 Ask AI About Your Data</h3>
+              <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 20 }}>
+                Ask questions about your data in plain English. The AI will analyze the schema and sample data to answer.
+              </p>
+
+              <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+                <input
+                  type="text"
+                  value={aiQuestion}
+                  onChange={(e) => setAiQuestion(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !aiLoading && askAI()}
+                  placeholder="e.g., What's the total spend by program? Which card has the most transactions?"
+                  style={{ flex: 1, padding: '12px 16px', fontSize: 14 }}
+                  disabled={aiLoading}
+                />
+                <button
+                  className="btn"
+                  onClick={askAI}
+                  disabled={aiLoading || !aiQuestion.trim()}
+                  style={{ padding: '12px 24px' }}
+                >
+                  {aiLoading ? '⏳ Thinking...' : '🔍 Ask'}
+                </button>
+              </div>
+
+              {/* Current Answer */}
+              {aiAnswer && (
+                <div style={{
+                  background: 'rgba(0, 245, 212, 0.05)',
+                  border: '1px solid rgba(0, 245, 212, 0.2)',
+                  borderRadius: 8,
+                  padding: 20,
+                  marginBottom: 20,
+                  whiteSpace: 'pre-wrap',
+                  fontSize: 13,
+                  lineHeight: 1.6
+                }}>
+                  {aiAnswer}
+                </div>
+              )}
+
+              {/* Suggested Questions */}
+              {!aiAnswer && !aiLoading && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontSize: 11, opacity: 0.5, marginBottom: 10 }}>Try asking:</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {[
+                      'What columns does this data have?',
+                      'Summarize this data for me',
+                      'What are the top 5 categories by amount?',
+                      'Are there any outliers or unusual values?',
+                      'What date range does this data cover?'
+                    ].map((q, i) => (
+                      <button
+                        key={i}
+                        className="btn btn-ghost"
+                        onClick={() => setAiQuestion(q)}
+                        style={{ fontSize: 11, padding: '6px 12px' }}
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* History */}
+              {aiHistory.length > 0 && (
+                <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                  <div style={{ fontSize: 11, opacity: 0.5, marginBottom: 12 }}>Previous Questions</div>
+                  {aiHistory.slice().reverse().map((item, i) => (
+                    <div key={i} style={{
+                      marginBottom: 16,
+                      padding: 16,
+                      background: 'rgba(255,255,255,0.02)',
+                      borderRadius: 6,
+                      fontSize: 12
+                    }}>
+                      <div style={{ fontWeight: 600, color: '#00BBF9', marginBottom: 8 }}>Q: {item.question}</div>
+                      <div style={{ opacity: 0.8, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{item.answer}</div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
