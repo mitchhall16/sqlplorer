@@ -35,6 +35,9 @@ export default function App() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiHistory, setAiHistory] = useState([]);
 
+  // Global search
+  const [globalSearch, setGlobalSearch] = useState('');
+
   const data = useMemo(() => tables[activeTable] || [], [tables, activeTable]);
 
   // Find amount column in joined data
@@ -523,6 +526,7 @@ export default function App() {
         setColumns(cols);
         setColumnTypes(types);
         setFilters({});
+        setGlobalSearch('');
         setSelectedCategory('all');
 
         // Default to dashboard view if we have joined transaction data
@@ -558,6 +562,7 @@ export default function App() {
     setColumns(cols);
     setColumnTypes(types);
     setFilters({});
+    setGlobalSearch('');
     setSelectedCategory('all');
     setParseLog([`✅ Loaded ${processedData.length} rows`]);
   }, []);
@@ -655,6 +660,7 @@ export default function App() {
     setColumns(cols);
     setColumnTypes(types);
     setFilters({});
+    setGlobalSearch('');
     setSelectedCategory('all');
     setSortConfig({ key: null, direction: 'asc' });
     setCalculatedColumns([]);
@@ -725,6 +731,16 @@ export default function App() {
   const filteredData = useMemo(() => {
     let result = [...data];
 
+    // Global search - filter across ALL columns
+    if (globalSearch.trim()) {
+      const searchLower = globalSearch.toLowerCase();
+      result = result.filter(row =>
+        Object.values(row).some(val =>
+          String(val || '').toLowerCase().includes(searchLower)
+        )
+      );
+    }
+
     const catCol = detectedColumns.category || detectedColumns.account;
     if (selectedCategory !== 'all' && catCol) {
       result = result.filter(row => row[catCol] === selectedCategory);
@@ -783,7 +799,7 @@ export default function App() {
     }
 
     return result;
-  }, [data, filters, sortConfig, selectedCategory, selectedMonth, detectedColumns, calculatedColumns]);
+  }, [data, filters, sortConfig, selectedCategory, selectedMonth, detectedColumns, calculatedColumns, globalSearch]);
 
   const stats = useMemo(() => {
     if (filteredData.length === 0) return null;
@@ -1560,6 +1576,22 @@ export default function App() {
           <div className="card" style={{ padding: 16, marginBottom: 20 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                {/* Global Search */}
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type="text"
+                    placeholder="Search all columns..."
+                    value={globalSearch}
+                    onChange={(e) => setGlobalSearch(e.target.value)}
+                    style={{
+                      width: 220,
+                      paddingLeft: 32,
+                      background: 'rgba(0, 245, 212, 0.05)',
+                      border: '1px solid rgba(0, 245, 212, 0.3)'
+                    }}
+                  />
+                  <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', opacity: 0.5 }}>🔍</span>
+                </div>
                 {uniqueCategories.length > 0 && (
                   <select
                     value={selectedCategory}
@@ -1584,18 +1616,8 @@ export default function App() {
                     ))}
                   </select>
                 )}
-                {columns.slice(0, 3).map(col => (
-                  <input
-                    key={col}
-                    type="text"
-                    placeholder={`${col}...`}
-                    value={filters[col] || ''}
-                    onChange={(e) => setFilters(prev => ({ ...prev, [col]: e.target.value }))}
-                    style={{ width: 100 }}
-                  />
-                ))}
-                {(Object.values(filters).some(v => v) || selectedMonth !== 'all' || selectedCategory !== 'all') && (
-                  <button className="btn btn-ghost" onClick={() => { setFilters({}); setSelectedMonth('all'); setSelectedCategory('all'); }} style={{ padding: '6px 12px' }}>
+                {(globalSearch || Object.values(filters).some(v => v) || selectedMonth !== 'all' || selectedCategory !== 'all') && (
+                  <button className="btn btn-ghost" onClick={() => { setGlobalSearch(''); setFilters({}); setSelectedMonth('all'); setSelectedCategory('all'); }} style={{ padding: '6px 12px' }}>
                     Clear All
                   </button>
                 )}
